@@ -411,8 +411,10 @@ RouteSnapshot WinNetworkService::getSnapshot() const
 
     RouteSnapshot snap;
     snap.capturedAtIso = QDateTime::currentDateTime().toString(Qt::ISODate);
-    snap.activeV4IfIndex = getBestInterfaceIndex(AF_INET, L"223.5.5.5");
-    snap.activeV6IfIndex = getBestInterfaceIndex(AF_INET6, L"2400:3200::1");
+    snap.osActiveV4IfIndex = getBestInterfaceIndex(AF_INET, L"223.5.5.5");
+    snap.osActiveV6IfIndex = getBestInterfaceIndex(AF_INET6, L"2400:3200::1");
+    snap.activeV4IfIndex = snap.osActiveV4IfIndex;
+    snap.activeV6IfIndex = snap.osActiveV6IfIndex;
 
     const auto metricsMap = queryInterfaceMetrics();
     const auto routesMap = queryDefaultRoutes();
@@ -548,6 +550,7 @@ RouteSnapshot WinNetworkService::getSnapshot() const
     }
 
     sortAdapters(snap.adapters);
+    resolvePhysicalEgress(snap);
     return snap;
 }
 
@@ -661,13 +664,11 @@ OperationResult WinNetworkService::restoreAllAutomatic(const RouteSnapshot& snap
 
 QString WinNetworkService::testConnectivity(const RouteSnapshot& snapshot) const
 {
-    const std::optional<int> bestV4 = getBestInterfaceIndex(AF_INET, L"223.5.5.5");
-    const AdapterInfo* active = nullptr;
-    if (bestV4.has_value()) {
-        active = snapshot.findByIfIndex(*bestV4);
-    }
+    const AdapterInfo* active = snapshot.activeV4Adapter();
     if (!active) {
-        active = snapshot.activeV4Adapter();
+        if (const std::optional<int> bestV4 = getBestInterfaceIndex(AF_INET, L"223.5.5.5"); bestV4.has_value()) {
+            active = snapshot.findByIfIndex(*bestV4);
+        }
     }
     if (!active) {
         return QStringLiteral("当前未检测到可用的 IPv4 互联网出口。");
@@ -679,6 +680,10 @@ QString WinNetworkService::testConnectivity(const RouteSnapshot& snapshot) const
         : pingIpv4Host(gw, QStringLiteral("网关"));
     const QString pubResult = pingIpv4Host(QStringLiteral("223.5.5.5"), QStringLiteral("公网(223.5.5.5)"));
 
+    if (const AdapterInfo* tun = snapshot.tunTakeoverAdapter()) {
+        return QStringLiteral("当前物理出口 [%1] (TUN: %2) · %3 · %4")
+            .arg(active->name, tun->name, gwResult, pubResult);
+    }
     return QStringLiteral("当前出口 [%1] · %2 · %3").arg(active->name, gwResult, pubResult);
 }
 

@@ -35,6 +35,7 @@ public:
         HasDefaultRouteRole,
         IsInternetRole,
         IsVirtualTunnelRole,
+        IsTunTakeoverRole,
     };
     Q_ENUM(Roles)
 
@@ -50,7 +51,9 @@ public:
     void setAdapters(
         const QList<AdapterInfo>& adapters,
         std::optional<int> activeV4IfIndex,
-        std::optional<int> activeV6IfIndex);
+        std::optional<int> activeV6IfIndex,
+        std::optional<int> tunTakeoverV4IfIndex = std::nullopt,
+        std::optional<int> tunTakeoverV6IfIndex = std::nullopt);
 
     Q_INVOKABLE QVariantMap get(int row) const;
 
@@ -61,6 +64,8 @@ private:
     QList<AdapterInfo> m_adapters;
     std::optional<int> m_activeV4IfIndex;
     std::optional<int> m_activeV6IfIndex;
+    std::optional<int> m_tunTakeoverV4IfIndex;
+    std::optional<int> m_tunTakeoverV6IfIndex;
 };
 
 } // namespace nrs

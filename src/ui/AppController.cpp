@@ -411,10 +411,27 @@ void AppController::applySnapshot(const RouteSnapshot& snapshot)
     m_activeV6Headline = formatActiveV6Headline(m_snapshot);
     m_hasSplitEgress = m_snapshot.hasSplitEgress();
     m_splitEgressWarning = formatSplitEgressWarning(m_snapshot);
+    m_hasTunTakeover = m_snapshot.hasTunTakeover();
+    m_tunTakeoverBadge = formatTunTakeoverBadge(m_snapshot);
 
-    m_internetModel->setAdapters(internet, snapshot.activeV4IfIndex, snapshot.activeV6IfIndex);
-    m_lanModel->setAdapters(lan, snapshot.activeV4IfIndex, snapshot.activeV6IfIndex);
-    m_disconnectedModel->setAdapters(disconnected, snapshot.activeV4IfIndex, snapshot.activeV6IfIndex);
+    m_internetModel->setAdapters(
+        internet,
+        snapshot.activeV4IfIndex,
+        snapshot.activeV6IfIndex,
+        snapshot.tunTakeoverV4IfIndex,
+        snapshot.tunTakeoverV6IfIndex);
+    m_lanModel->setAdapters(
+        lan,
+        snapshot.activeV4IfIndex,
+        snapshot.activeV6IfIndex,
+        snapshot.tunTakeoverV4IfIndex,
+        snapshot.tunTakeoverV6IfIndex);
+    m_disconnectedModel->setAdapters(
+        disconnected,
+        snapshot.activeV4IfIndex,
+        snapshot.activeV6IfIndex,
+        snapshot.tunTakeoverV4IfIndex,
+        snapshot.tunTakeoverV6IfIndex);
     emit snapshotChanged();
 }
 
@@ -795,7 +812,9 @@ QJsonArray AppController::buildQueryItems(const QString& text, int limit) const
         }
     };
 
-    const QString panelSub = QStringLiteral("IPv4: %1 · IPv6: %2").arg(m_activeV4Headline, m_activeV6Headline);
+    const QString baseSub = QStringLiteral("IPv4: %1 · IPv6: %2").arg(m_activeV4Headline, m_activeV6Headline);
+    const AdapterInfo* tun = m_snapshot.tunTakeoverAdapter();
+    const QString panelSub = tun ? QStringLiteral("%1 · TUN: %2").arg(baseSub, tun->name) : baseSub;
     pushIfMatch(
         QJsonObject{
             {QStringLiteral("id"), QStringLiteral("open-panel")},
@@ -1065,12 +1084,16 @@ void AppController::handleTrayMenu(const QJsonValue& id, bool hasId)
     }
 
     const AdapterInfo* activeV4 = m_snapshot.activeV4Adapter();
+    const AdapterInfo* tun = m_snapshot.tunTakeoverAdapter();
     const QString gw = (activeV4 && !activeV4->ipv4Gateways.isEmpty())
         ? activeV4->ipv4Gateways.first()
         : QStringLiteral("-");
-    const QString headerTitle = activeV4
+    QString headerTitle = activeV4
         ? QStringLiteral("当前出口: %1 (%2)").arg(activeV4->name, gw)
         : QStringLiteral("当前出口: 无可用公网连接");
+    if (activeV4 && tun) {
+        headerTitle += QStringLiteral(" [TUN: %1]").arg(tun->name);
+    }
 
     QJsonArray items;
     items.append(QJsonObject{

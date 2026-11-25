@@ -70,6 +70,10 @@ struct RouteSnapshot {
     QList<AdapterInfo> adapters;
     std::optional<int> activeV4IfIndex;
     std::optional<int> activeV6IfIndex;
+    std::optional<int> osActiveV4IfIndex;
+    std::optional<int> osActiveV6IfIndex;
+    std::optional<int> tunTakeoverV4IfIndex;
+    std::optional<int> tunTakeoverV6IfIndex;
     QString capturedAtIso;
 
     const AdapterInfo* findByIfIndex(int ifIndex) const
@@ -90,6 +94,28 @@ struct RouteSnapshot {
     const AdapterInfo* activeV6Adapter() const
     {
         return activeV6IfIndex.has_value() ? findByIfIndex(*activeV6IfIndex) : nullptr;
+    }
+
+    const AdapterInfo* tunTakeoverAdapter() const
+    {
+        if (tunTakeoverV4IfIndex.has_value()) {
+            return findByIfIndex(*tunTakeoverV4IfIndex);
+        }
+        if (tunTakeoverV6IfIndex.has_value()) {
+            return findByIfIndex(*tunTakeoverV6IfIndex);
+        }
+        return nullptr;
+    }
+
+    bool hasTunTakeover() const
+    {
+        return tunTakeoverV4IfIndex.has_value() || tunTakeoverV6IfIndex.has_value();
+    }
+
+    bool isTunTakeoverAdapter(int ifIndex) const
+    {
+        return (tunTakeoverV4IfIndex.has_value() && *tunTakeoverV4IfIndex == ifIndex)
+            || (tunTakeoverV6IfIndex.has_value() && *tunTakeoverV6IfIndex == ifIndex);
     }
 
     bool hasSplitEgress() const

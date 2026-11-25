@@ -18,11 +18,15 @@ QString makeRankText(const AdapterInfo& a, int row)
 
 RouteSnapshot makeBadgeSnapshot(
     std::optional<int> activeV4IfIndex,
-    std::optional<int> activeV6IfIndex)
+    std::optional<int> activeV6IfIndex,
+    std::optional<int> tunTakeoverV4IfIndex,
+    std::optional<int> tunTakeoverV6IfIndex)
 {
     RouteSnapshot snap;
     snap.activeV4IfIndex = activeV4IfIndex;
     snap.activeV6IfIndex = activeV6IfIndex;
+    snap.tunTakeoverV4IfIndex = tunTakeoverV4IfIndex;
+    snap.tunTakeoverV6IfIndex = tunTakeoverV6IfIndex;
     return snap;
 }
 
@@ -74,7 +78,9 @@ QVariant AdapterListModel::data(const QModelIndex& index, int role) const
     case IsActiveV6Role:
         return activeV6;
     case EgressBadgeRole:
-        return formatEgressBadge(a, makeBadgeSnapshot(m_activeV4IfIndex, m_activeV6IfIndex));
+        return formatEgressBadge(
+            a,
+            makeBadgeSnapshot(m_activeV4IfIndex, m_activeV6IfIndex, m_tunTakeoverV4IfIndex, m_tunTakeoverV6IfIndex));
     case NetworkSummaryRole:
         return formatNetworkSummary(a);
     case MetricSummaryRole:
@@ -89,6 +95,9 @@ QVariant AdapterListModel::data(const QModelIndex& index, int role) const
         return a.category == AdapterCategory::Internet;
     case IsVirtualTunnelRole:
         return a.kind == AdapterKind::VirtualTunnel;
+    case IsTunTakeoverRole:
+        return (m_tunTakeoverV4IfIndex.has_value() && *m_tunTakeoverV4IfIndex == a.ifIndex)
+            || (m_tunTakeoverV6IfIndex.has_value() && *m_tunTakeoverV6IfIndex == a.ifIndex);
     default:
         return {};
     }
@@ -116,18 +125,23 @@ QHash<int, QByteArray> AdapterListModel::roleNames() const
         {HasDefaultRouteRole, "hasDefaultRoute"},
         {IsInternetRole, "isInternet"},
         {IsVirtualTunnelRole, "isVirtualTunnel"},
+        {IsTunTakeoverRole, "isTunTakeover"},
     };
 }
 
 void AdapterListModel::setAdapters(
     const QList<AdapterInfo>& adapters,
     std::optional<int> activeV4IfIndex,
-    std::optional<int> activeV6IfIndex)
+    std::optional<int> activeV6IfIndex,
+    std::optional<int> tunTakeoverV4IfIndex,
+    std::optional<int> tunTakeoverV6IfIndex)
 {
     beginResetModel();
     m_adapters = adapters;
     m_activeV4IfIndex = activeV4IfIndex;
     m_activeV6IfIndex = activeV6IfIndex;
+    m_tunTakeoverV4IfIndex = tunTakeoverV4IfIndex;
+    m_tunTakeoverV6IfIndex = tunTakeoverV6IfIndex;
     endResetModel();
     emit countChanged();
 }
@@ -140,6 +154,8 @@ QVariantMap AdapterListModel::get(int row) const
     const AdapterInfo& a = m_adapters.at(row);
     const bool activeV4 = m_activeV4IfIndex.has_value() && *m_activeV4IfIndex == a.ifIndex;
     const bool activeV6 = m_activeV6IfIndex.has_value() && *m_activeV6IfIndex == a.ifIndex;
+    const bool tunTakeover = (m_tunTakeoverV4IfIndex.has_value() && *m_tunTakeoverV4IfIndex == a.ifIndex)
+        || (m_tunTakeoverV6IfIndex.has_value() && *m_tunTakeoverV6IfIndex == a.ifIndex);
     return {
         {QStringLiteral("ifIndex"), a.ifIndex},
         {QStringLiteral("name"), a.name},
@@ -152,7 +168,7 @@ QVariantMap AdapterListModel::get(int row) const
         {QStringLiteral("isLast"), row + 1 == m_adapters.size()},
         {QStringLiteral("isActiveV4"), activeV4},
         {QStringLiteral("isActiveV6"), activeV6},
-        {QStringLiteral("egressBadge"), formatEgressBadge(a, makeBadgeSnapshot(m_activeV4IfIndex, m_activeV6IfIndex))},
+        {QStringLiteral("egressBadge"), formatEgressBadge(a, makeBadgeSnapshot(m_activeV4IfIndex, m_activeV6IfIndex, m_tunTakeoverV4IfIndex, m_tunTakeoverV6IfIndex))},
         {QStringLiteral("networkSummary"), formatNetworkSummary(a)},
         {QStringLiteral("metricSummary"), formatMetricSummary(a)},
         {QStringLiteral("ipv4InterfaceMetric"), a.ipv4InterfaceMetric},
@@ -160,6 +176,7 @@ QVariantMap AdapterListModel::get(int row) const
         {QStringLiteral("hasDefaultRoute"), a.hasIpv4DefaultRoute || a.hasIpv6DefaultRoute},
         {QStringLiteral("isInternet"), a.category == AdapterCategory::Internet},
         {QStringLiteral("isVirtualTunnel"), a.kind == AdapterKind::VirtualTunnel},
+        {QStringLiteral("isTunTakeover"), tunTakeover},
     };
 }
 

@@ -18,6 +18,8 @@ AdapterCategory classifyAdapter(const AdapterInfo& info);
 
 void sortAdapters(QList<AdapterInfo>& adapters);
 
+void resolvePhysicalEgress(RouteSnapshot& snap);
+
 QList<int> computePriorityMetrics(
     const QList<AdapterInfo>& orderedInternetAdapters,
     bool syncIpv6);
@@ -39,6 +41,8 @@ QString formatActiveV4Headline(const RouteSnapshot& snap);
 QString formatActiveV6Headline(const RouteSnapshot& snap);
 
 QString formatSplitEgressWarning(const RouteSnapshot& snap);
+
+QString formatTunTakeoverBadge(const RouteSnapshot& snap);
 
 bool matchesFilter(const AdapterInfo& a, const QString& keyword);
 

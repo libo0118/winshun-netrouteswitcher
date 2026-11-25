@@ -319,6 +319,67 @@ void testActiveEgressAndSplitWarning()
     ++g_passedGroups;
 }
 
+void testTunTakeoverResolvesPhysicalEgress()
+{
+    nrs::AdapterInfo wlan = makeInternetAdapter(17, QStringLiteral("WLAN"), 10, 16);
+    wlan.kind = nrs::AdapterKind::Wifi;
+    wlan.ipv4Gateways = {QStringLiteral("192.168.43.1")};
+    wlan.ipv4InterfaceMetric = 10;
+    wlan.ipv6InterfaceMetric = 10;
+
+    nrs::AdapterInfo eth2 = makeInternetAdapter(16, QStringLiteral("以太网 2"), 30, 256);
+    eth2.kind = nrs::AdapterKind::Ethernet;
+    eth2.ipv4Gateways = {QStringLiteral("192.168.8.1")};
+    eth2.ipv4InterfaceMetric = 30;
+    eth2.ipv6InterfaceMetric = 30;
+
+    nrs::AdapterInfo bettbox;
+    bettbox.ifIndex = 19;
+    bettbox.name = QStringLiteral("Bettbox");
+    bettbox.description = QStringLiteral("Bettbox Tunnel");
+    bettbox.ifType = 53u;
+    bettbox.isUp = true;
+    bettbox.kind = nrs::AdapterKind::VirtualTunnel;
+    bettbox.category = nrs::AdapterCategory::LanOrVirtual;
+
+    // Case 1: Bettbox TUN takes over both IPv4 & IPv6; lowest physical default route is WLAN (eff 20 / 26)
+    nrs::RouteSnapshot snap1;
+    snap1.adapters = {wlan, eth2, bettbox};
+    snap1.osActiveV4IfIndex = 19;
+    snap1.osActiveV6IfIndex = 19;
+    nrs::resolvePhysicalEgress(snap1);
+
+    NRS_CHECK(snap1.hasTunTakeover());
+    NRS_CHECK(snap1.activeV4IfIndex == 17);
+    NRS_CHECK(snap1.activeV6IfIndex == 17);
+    NRS_CHECK(snap1.tunTakeoverV4IfIndex == 19);
+    NRS_CHECK(snap1.tunTakeoverV6IfIndex == 19);
+    NRS_CHECK_EQ(nrs::formatTunTakeoverBadge(snap1), QStringLiteral("TUN 接管: Bettbox"));
+    NRS_CHECK_EQ(nrs::formatEgressBadge(wlan, snap1), QStringLiteral("当前 IPv4 + IPv6 出口"));
+    NRS_CHECK_EQ(nrs::formatEgressBadge(bettbox, snap1), QStringLiteral("TUN 流量接管中"));
+
+    // Case 2: Switch primary metric to 以太网 2 (metric 5 -> eff 35 < WLAN metric 30 -> eff 40)
+    wlan.ipv4InterfaceMetric = 30;
+    eth2.ipv4InterfaceMetric = 5;
+    nrs::RouteSnapshot snap2;
+    snap2.adapters = {wlan, eth2, bettbox};
+    snap2.osActiveV4IfIndex = 19;
+    snap2.osActiveV6IfIndex = 19;
+    nrs::resolvePhysicalEgress(snap2);
+    NRS_CHECK(snap2.activeV4IfIndex == 16);
+    NRS_CHECK(snap2.activeV6IfIndex == 17);
+    NRS_CHECK(snap2.hasSplitEgress());
+
+    // Case 3: Pure VPN mode without any physical adapter -> keep OS virtual egress
+    nrs::RouteSnapshot vpnOnly;
+    vpnOnly.adapters = {bettbox};
+    vpnOnly.osActiveV4IfIndex = 19;
+    nrs::resolvePhysicalEgress(vpnOnly);
+    NRS_CHECK(!vpnOnly.hasTunTakeover());
+    NRS_CHECK(vpnOnly.activeV4IfIndex == 19);
+    ++g_passedGroups;
+}
+
 void testThemeDataFromAppearance()
 {
     // Dark theme defaults
@@ -377,6 +438,7 @@ int main()
     testEasyTierAndBettboxScenarios();
     testSpeedAndSummaryFormatting();
     testActiveEgressAndSplitWarning();
+    testTunTakeoverResolvesPhysicalEgress();
     testThemeDataFromAppearance();
 
     if (g_failures > 0) {

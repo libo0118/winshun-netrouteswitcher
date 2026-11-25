@@ -203,6 +203,16 @@ ApplicationWindow {
                         boldText: true
                     }
 
+                    BadgePill {
+                        visible: controller.hasTunTakeover
+                        labelText: controller.tunTakeoverBadge
+                        bgColor: theme.infoBg
+                        borderColor: theme.infoBorder
+                        textColor: theme.infoText
+                        hasBorder: true
+                        boldText: true
+                    }
+
                     Item { Layout.fillWidth: true }
 
                     ActionBtn {
@@ -559,8 +569,10 @@ ApplicationWindow {
                             implicitHeight: lanRow.implicitHeight + 20
                             color: theme.surface
                             radius: theme.cardRadius
-                            border.width: hasActiveEgress ? 1.5 : 1
-                            border.color: hasActiveEgress ? theme.activeCardBorder : theme.softBorder
+                            border.width: (hasActiveEgress || isTunTakeover) ? 1.5 : 1
+                            border.color: hasActiveEgress
+                                ? theme.activeCardBorder
+                                : (isTunTakeover ? theme.infoBorder : theme.softBorder)
 
                             RowLayout {
                                 id: lanRow
@@ -610,11 +622,17 @@ ApplicationWindow {
                                         BadgePill {
                                             visible: egressBadge.length > 0
                                             labelText: egressBadge
-                                            bgColor: hasActiveEgress ? theme.successBg : theme.cardSurface
-                                            borderColor: hasActiveEgress ? theme.successBorder : theme.softBorder
-                                            textColor: hasActiveEgress ? theme.successText : theme.subtext
+                                            bgColor: hasActiveEgress
+                                                ? theme.successBg
+                                                : (isTunTakeover ? theme.infoBg : theme.cardSurface)
+                                            borderColor: hasActiveEgress
+                                                ? theme.successBorder
+                                                : (isTunTakeover ? theme.infoBorder : theme.softBorder)
+                                            textColor: hasActiveEgress
+                                                ? theme.successText
+                                                : (isTunTakeover ? theme.infoText : theme.subtext)
                                             hasBorder: true
-                                            boldText: hasActiveEgress
+                                            boldText: hasActiveEgress || isTunTakeover
                                         }
                                     }
 

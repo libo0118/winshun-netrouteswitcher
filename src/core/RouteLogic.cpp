@@ -127,6 +127,80 @@ void sortAdapters(QList<AdapterInfo>& adapters)
         });
 }
 
+void resolvePhysicalEgress(RouteSnapshot& snap)
+{
+    if (!snap.osActiveV4IfIndex.has_value()) {
+        snap.osActiveV4IfIndex = snap.activeV4IfIndex;
+    }
+    if (!snap.osActiveV6IfIndex.has_value()) {
+        snap.osActiveV6IfIndex = snap.activeV6IfIndex;
+    }
+
+    snap.tunTakeoverV4IfIndex.reset();
+    snap.tunTakeoverV6IfIndex.reset();
+
+    auto findBestPhysical = [&](bool isV6) -> const AdapterInfo* {
+        const AdapterInfo* bestDefault = nullptr;
+        int bestDefaultMetric = std::numeric_limits<int>::max();
+        const AdapterInfo* bestGateway = nullptr;
+        int bestGatewayMetric = std::numeric_limits<int>::max();
+
+        for (const AdapterInfo& a : snap.adapters) {
+            if (!a.isUp || a.kind == AdapterKind::VirtualTunnel) {
+                continue;
+            }
+            const bool hasDef = isV6 ? a.hasIpv6DefaultRoute : a.hasIpv4DefaultRoute;
+            const std::optional<int> eff = isV6 ? a.effectiveV6Metric() : a.effectiveV4Metric();
+            if (hasDef && eff.has_value()) {
+                if (!bestDefault || *eff < bestDefaultMetric
+                    || (*eff == bestDefaultMetric && a.ifIndex < bestDefault->ifIndex)) {
+                    bestDefault = &a;
+                    bestDefaultMetric = *eff;
+                }
+                continue;
+            }
+            const bool hasGw = isV6 ? !a.ipv6Gateways.isEmpty() : !a.ipv4Gateways.isEmpty();
+            if (hasGw) {
+                const int ifMet = isV6 ? a.ipv6InterfaceMetric.value_or(0) : a.ipv4InterfaceMetric;
+                if (!bestGateway || ifMet < bestGatewayMetric
+                    || (ifMet == bestGatewayMetric && a.ifIndex < bestGateway->ifIndex)) {
+                    bestGateway = &a;
+                    bestGatewayMetric = ifMet;
+                }
+            }
+        }
+        return bestDefault ? bestDefault : bestGateway;
+    };
+
+    if (const std::optional<int> osV4 = snap.osActiveV4IfIndex; osV4.has_value()) {
+        const AdapterInfo* osV4Adapter = snap.findByIfIndex(*osV4);
+        if (osV4Adapter && osV4Adapter->kind == AdapterKind::VirtualTunnel) {
+            if (const AdapterInfo* phys = findBestPhysical(false)) {
+                snap.tunTakeoverV4IfIndex = osV4;
+                snap.activeV4IfIndex = phys->ifIndex;
+            } else {
+                snap.activeV4IfIndex = osV4;
+            }
+        } else {
+            snap.activeV4IfIndex = osV4;
+        }
+    }
+
+    if (const std::optional<int> osV6 = snap.osActiveV6IfIndex; osV6.has_value()) {
+        const AdapterInfo* osV6Adapter = snap.findByIfIndex(*osV6);
+        if (osV6Adapter && osV6Adapter->kind == AdapterKind::VirtualTunnel) {
+            if (const AdapterInfo* phys = findBestPhysical(true)) {
+                snap.tunTakeoverV6IfIndex = osV6;
+                snap.activeV6IfIndex = phys->ifIndex;
+            } else {
+                snap.activeV6IfIndex = osV6;
+            }
+        } else {
+            snap.activeV6IfIndex = osV6;
+        }
+    }
+}
+
 QList<int> computePriorityMetrics(
     const QList<AdapterInfo>& orderedInternetAdapters,
     bool syncIpv6)
@@ -258,6 +332,9 @@ QString formatEgressBadge(const AdapterInfo& a, const RouteSnapshot& snap)
     if (isActiveV6) {
         return QStringLiteral("仅 IPv6 出口");
     }
+    if (snap.isTunTakeoverAdapter(a.ifIndex)) {
+        return QStringLiteral("TUN 流量接管中");
+    }
     if (a.category == AdapterCategory::LanOrVirtual) {
         return QStringLiteral("无默认网关 · 不抢外网");
     }
@@ -300,6 +377,15 @@ QString formatSplitEgressWarning(const RouteSnapshot& snap)
     const QString v6Name = v6 ? v6->name : QStringLiteral("#%1").arg(*snap.activeV6IfIndex);
     return QStringLiteral("检测到 IPv4 (%1) 与 IPv6 (%2) 出口不一致，切换首选网卡并勾选“同步 IPv6 优先级”即可统一。")
         .arg(v4Name, v6Name);
+}
+
+QString formatTunTakeoverBadge(const RouteSnapshot& snap)
+{
+    const AdapterInfo* tun = snap.tunTakeoverAdapter();
+    if (!tun) {
+        return {};
+    }
+    return QStringLiteral("TUN 接管: %1").arg(tun->name);
 }
 
 bool matchesFilter(const AdapterInfo& a, const QString& keyword)

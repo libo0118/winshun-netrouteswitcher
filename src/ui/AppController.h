@@ -43,6 +43,8 @@ class AppController : public QObject {
     Q_PROPERTY(QString activeV6Headline READ activeV6Headline NOTIFY snapshotChanged)
     Q_PROPERTY(bool hasSplitEgress READ hasSplitEgress NOTIFY snapshotChanged)
     Q_PROPERTY(QString splitEgressWarning READ splitEgressWarning NOTIFY snapshotChanged)
+    Q_PROPERTY(bool hasTunTakeover READ hasTunTakeover NOTIFY snapshotChanged)
+    Q_PROPERTY(QString tunTakeoverBadge READ tunTakeoverBadge NOTIFY snapshotChanged)
     Q_PROPERTY(int internetCount READ internetCount NOTIFY snapshotChanged)
     Q_PROPERTY(int lanCount READ lanCount NOTIFY snapshotChanged)
     Q_PROPERTY(int disconnectedCount READ disconnectedCount NOTIFY snapshotChanged)
@@ -73,6 +75,8 @@ public:
     QString activeV6Headline() const { return m_activeV6Headline; }
     bool hasSplitEgress() const { return m_hasSplitEgress; }
     QString splitEgressWarning() const { return m_splitEgressWarning; }
+    bool hasTunTakeover() const { return m_hasTunTakeover; }
+    QString tunTakeoverBadge() const { return m_tunTakeoverBadge; }
     int internetCount() const { return m_internetModel->count(); }
     int lanCount() const { return m_lanModel->count(); }
     int disconnectedCount() const { return m_disconnectedModel->count(); }
@@ -172,6 +176,8 @@ private:
     QString m_activeV6Headline = QStringLiteral("正在检测...");
     bool m_hasSplitEgress = false;
     QString m_splitEgressWarning;
+    bool m_hasTunTakeover = false;
+    QString m_tunTakeoverBadge;
     QString m_statusMessage = QStringLiteral("就绪");
     bool m_statusError = false;
     QElapsedTimer m_lastRefreshTimer;
