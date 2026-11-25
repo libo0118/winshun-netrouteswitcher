@@ -6,6 +6,7 @@
 #include <QCoreApplication>
 #include <QDir>
 #include <QFile>
+#include <QFileSystemWatcher>
 #include <QGuiApplication>
 #include <QIcon>
 #include <QJsonDocument>
@@ -163,6 +164,7 @@ AppController::AppController(
                 }
             }, Qt::QueuedConnection);
         });
+        startShowTriggerWatch();
         refresh();
         showWindow();
     }
@@ -252,6 +254,7 @@ void AppController::beginShutdown()
     if (m_watchDebounceTimer && m_watchDebounceTimer->isActive()) {
         m_watchDebounceTimer->stop();
     }
+    stopShowTriggerWatch();
     m_networkService.stopWatching();
     stopWorker();
     if (m_window) {
@@ -331,6 +334,53 @@ void AppController::setDialogOpen(bool open)
     }
     m_dialogOpen = open;
     emit dialogOpenChanged();
+}
+
+void AppController::startShowTriggerWatch()
+{
+    if (m_shuttingDown || m_dataDir.trimmed().isEmpty()) {
+        return;
+    }
+    QDir().mkpath(m_dataDir);
+    // Clear any stale trigger from a prior crash so startup stays silent.
+    QFile::remove(QDir(m_dataDir).filePath(QStringLiteral("open.trigger")));
+
+    if (!m_triggerWatcher) {
+        m_triggerWatcher = new QFileSystemWatcher(this);
+        connect(m_triggerWatcher, &QFileSystemWatcher::directoryChanged, this, [this]() {
+            consumeShowTrigger();
+        });
+    }
+    if (!m_triggerWatcher->directories().contains(m_dataDir)) {
+        m_triggerWatcher->addPath(m_dataDir);
+    }
+}
+
+void AppController::stopShowTriggerWatch()
+{
+    if (!m_triggerWatcher) {
+        return;
+    }
+    const QStringList dirs = m_triggerWatcher->directories();
+    if (!dirs.isEmpty()) {
+        m_triggerWatcher->removePaths(dirs);
+    }
+}
+
+void AppController::consumeShowTrigger()
+{
+    if (m_shuttingDown || m_dataDir.trimmed().isEmpty()) {
+        return;
+    }
+    const QString triggerPath = QDir(m_dataDir).filePath(QStringLiteral("open.trigger"));
+    if (!QFile::exists(triggerPath)) {
+        return;
+    }
+    if (QFile::remove(triggerPath)) {
+        showWindow();
+    } else {
+        QTimer::singleShot(30, this, &AppController::consumeShowTrigger);
+    }
 }
 
 void AppController::applySnapshot(const RouteSnapshot& snapshot)
@@ -929,6 +979,7 @@ void AppController::handleInitialize(const QJsonValue& id, const QJsonObject& pa
             }
         }, Qt::QueuedConnection);
     });
+    startShowTriggerWatch();
     refresh();
 }
 

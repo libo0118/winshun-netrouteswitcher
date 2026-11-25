@@ -3,6 +3,10 @@
 
 #include <QByteArray>
 #include <QCoreApplication>
+#include <QDateTime>
+#include <QDir>
+#include <QFile>
+#include <QFileInfo>
 #include <QGuiApplication>
 #include <QIcon>
 #include <QJsonDocument>
@@ -10,10 +14,16 @@
 #include <QStandardPaths>
 #include <QString>
 
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <memory>
+#include <vector>
 
 namespace {
 
@@ -57,18 +67,99 @@ QString argValue(int argc, char* argv[], const char* prefix)
     return {};
 }
 
+QString resolveShowDataDir(const QString& explicitDir)
+{
+    if (!explicitDir.trimmed().isEmpty()) {
+        return QDir::cleanPath(explicitDir.trimmed());
+    }
+
+    std::vector<wchar_t> buf(MAX_PATH, L'\0');
+    for (;;) {
+        const DWORD len = ::GetModuleFileNameW(nullptr, buf.data(), static_cast<DWORD>(buf.size()));
+        if (len == 0) {
+            break;
+        }
+        if (len < buf.size() - 1) {
+            const QString exePath = QString::fromWCharArray(buf.data(), static_cast<int>(len));
+            const QDir exeDir = QFileInfo(exePath).dir();
+            const QString folderName = exeDir.dirName();
+            QDir parentDir = exeDir;
+            if (!folderName.isEmpty() && parentDir.cdUp()) {
+                return parentDir.filePath(folderName + QStringLiteral(".data"));
+            }
+            break;
+        }
+        if (buf.size() >= 32768) {
+            break;
+        }
+        buf.resize(buf.size() * 2, L'\0');
+    }
+
+    const QString localAppData = qEnvironmentVariable("LOCALAPPDATA");
+    if (!localAppData.trimmed().isEmpty()) {
+        return QDir(localAppData).filePath(QStringLiteral("libo0118/NetRouteSwitcher"));
+    }
+    return QDir::current().filePath(QStringLiteral("data"));
+}
+
+int triggerExistingInstanceShow(const QString& explicitDir)
+{
+    const QString dataDir = resolveShowDataDir(explicitDir);
+    if (!QDir().mkpath(dataDir)) {
+        std::fprintf(stderr, "[netrouteswitcher][warn] Failed to create data dir for --show.\n");
+        std::fflush(stderr);
+        return 1;
+    }
+
+    ::AllowSetForegroundWindow(ASFW_ANY);
+
+    const QString triggerPath = QDir(dataDir).filePath(QStringLiteral("open.trigger"));
+    const QString tmpPath = QDir(dataDir).filePath(QStringLiteral("open.trigger.tmp"));
+    QFile::remove(tmpPath);
+    QFile tmpFile(tmpPath);
+    if (tmpFile.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        const QByteArray payload = QByteArray::number(QDateTime::currentMSecsSinceEpoch()) + '\n';
+        tmpFile.write(payload);
+        tmpFile.flush();
+        tmpFile.close();
+        QFile::remove(triggerPath);
+        if (QFile::rename(tmpPath, triggerPath)) {
+            return 0;
+        }
+        QFile::remove(tmpPath);
+    }
+
+    QFile::remove(triggerPath);
+    QFile directFile(triggerPath);
+    if (directFile.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        directFile.write(QByteArray::number(QDateTime::currentMSecsSinceEpoch()) + '\n');
+        directFile.flush();
+        directFile.close();
+        return 0;
+    }
+
+    std::fprintf(stderr, "[netrouteswitcher][warn] Failed to write open.trigger.\n");
+    std::fflush(stderr);
+    return 1;
+}
+
 } // namespace
 
 int main(int argc, char* argv[])
 {
     qInstallMessageHandler(stderrMessageHandler);
 
-    const bool standalone = hasArg(argc, argv, "--standalone");
-    QByteArray pending;
     QString initialDataDir = argValue(argc, argv, "--data-dir=");
     if (initialDataDir.isEmpty()) {
         initialDataDir = qEnvironmentVariable("WS_DATA_DIR");
     }
+
+    if (hasArg(argc, argv, "--show")) {
+        return triggerExistingInstanceShow(initialDataDir);
+    }
+
+    const bool standalone = hasArg(argc, argv, "--standalone");
+    QByteArray pending;
 
     if (!standalone) {
         const auto firstObj = nrs::Protocol::readFirst(&pending);

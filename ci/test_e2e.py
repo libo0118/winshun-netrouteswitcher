@@ -239,6 +239,27 @@ def run_e2e(exe_path: Path, qt_dir: Path, repo_root: Path) -> None:
             })
             assert len(alive.get("items", [])) >= 4, alive
 
+            show_env = os.environ.copy()
+            show_env["PATH"] = str(qt_dir / "bin") + os.pathsep + show_env.get("PATH", "")
+            subprocess.run(
+                [str(exe_path), "--show", f"--data-dir={data_dir}"],
+                env=show_env,
+                check=True,
+                timeout=5.0,
+            )
+            trigger_file = data_dir / "open.trigger"
+            consumed = False
+            deadline = time.monotonic() + 1.5
+            while time.monotonic() < deadline:
+                if not trigger_file.exists():
+                    consumed = True
+                    break
+                time.sleep(0.05)
+            assert consumed, f"Expected running plugin to consume {trigger_file}"
+            assert harness.proc.poll() is None, (
+                f"Process crashed/exited after --show trigger (returncode={harness.proc.returncode})"
+            )
+
             shut_res = harness.request("shutdown", {}, timeout=5.0)
             assert shut_res == {}, f"Expected {{}} from shutdown, got {shut_res}"
             exit_code = harness.proc.wait(timeout=5.0)

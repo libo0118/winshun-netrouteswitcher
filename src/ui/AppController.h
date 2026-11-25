@@ -22,6 +22,7 @@
 #include <optional>
 #include <thread>
 
+class QFileSystemWatcher;
 class QQmlApplicationEngine;
 class QQuickWindow;
 class QTimer;
@@ -115,6 +116,9 @@ private:
     void endTask();
     void beginShutdown();
     bool ensureWindow();
+    void startShowTriggerWatch();
+    void stopShowTriggerWatch();
+    void consumeShowTrigger();
 
     void applySnapshot(const RouteSnapshot& snapshot);
     void setStatus(const QString& message, bool isError);
@@ -160,6 +164,7 @@ private:
     std::unique_ptr<QQmlApplicationEngine> m_engine;
     QPointer<QQuickWindow> m_window;
     QTimer* m_watchDebounceTimer = nullptr;
+    QFileSystemWatcher* m_triggerWatcher = nullptr;
 
     RouteSnapshot m_snapshot;
     PluginSettings m_settings;

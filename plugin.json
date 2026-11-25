@@ -6,7 +6,7 @@
     "zh": "多网卡出口切换",
     "en": "Net Route Switcher"
   },
-  "version": "0.1.0",
+  "version": "0.1.1",
   "minWinShun": "0.25.0",
   "description": {
     "zh": "原生多网卡出口路由切换与跃点数管理工具：支持查看 IPv4/IPv6 默认出口、调整首选/备选网卡优先级、自定义跃点数、出口测速及系统托盘快捷切换。",
