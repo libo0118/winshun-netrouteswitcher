@@ -152,6 +152,7 @@ private:
     void endTask();
     void beginShutdown();
     bool ensureWindow();
+    void releaseWindowResources();
     void startShowTriggerWatch();
     void stopShowTriggerWatch();
     void consumeShowTrigger();
@@ -211,6 +212,7 @@ private:
     QPointer<QQuickWindow> m_window;
     QTimer* m_watchDebounceTimer = nullptr;
     QTimer* m_wifiRetryTimer = nullptr;
+    QTimer* m_uiReleaseTimer = nullptr;
     QFileSystemWatcher* m_triggerWatcher = nullptr;
 
     RouteSnapshot m_snapshot;

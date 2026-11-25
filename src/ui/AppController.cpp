@@ -65,6 +65,11 @@ void applyWindowChrome(QWindow* window, const ThemeData& theme)
     dwmSetAttr(hwnd, 33 /* DWMWA_WINDOW_CORNER_PREFERENCE */, &corner, sizeof(corner));
 }
 
+void trimProcessWorkingSet()
+{
+    ::SetProcessWorkingSetSizeEx(::GetCurrentProcess(), static_cast<SIZE_T>(-1), static_cast<SIZE_T>(-1), 0);
+}
+
 bool matchesKeywords(const QString& haystack, const QString& filterText)
 {
     const QString trimmed = filterText.trimmed();
@@ -135,7 +140,12 @@ AppController::AppController(
     , m_wifiRuleModel(new WifiRuleModel(this))
     , m_watchDebounceTimer(new QTimer(this))
     , m_wifiRetryTimer(new QTimer(this))
+    , m_uiReleaseTimer(new QTimer(this))
 {
+    m_uiReleaseTimer->setSingleShot(true);
+    m_uiReleaseTimer->setInterval(1500);
+    connect(m_uiReleaseTimer, &QTimer::timeout, this, &AppController::releaseWindowResources);
+
     m_watchDebounceTimer->setSingleShot(true);
     m_watchDebounceTimer->setInterval(600);
     connect(m_watchDebounceTimer, &QTimer::timeout, this, [this]() {
@@ -289,6 +299,9 @@ void AppController::beginShutdown()
         m_shuttingDown = true;
         emit shuttingDownChanged();
     }
+    if (m_uiReleaseTimer && m_uiReleaseTimer->isActive()) {
+        m_uiReleaseTimer->stop();
+    }
     if (m_watchDebounceTimer && m_watchDebounceTimer->isActive()) {
         m_watchDebounceTimer->stop();
     }
@@ -341,6 +354,9 @@ bool AppController::ensureWindow()
 
 void AppController::showWindow()
 {
+    if (m_uiReleaseTimer && m_uiReleaseTimer->isActive()) {
+        m_uiReleaseTimer->stop();
+    }
     if (!ensureWindow()) {
         return;
     }
@@ -366,6 +382,29 @@ void AppController::hideWindow()
     if (m_window) {
         m_window->hide();
     }
+    if (!m_standaloneMode && !m_shuttingDown && m_uiReleaseTimer) {
+        m_uiReleaseTimer->start();
+    }
+}
+
+void AppController::releaseWindowResources()
+{
+    if (m_shuttingDown || m_standaloneMode) {
+        return;
+    }
+    if (m_window && m_window->isVisible()) {
+        return;
+    }
+    if (m_dialogOpen) {
+        setDialogOpen(false);
+    }
+    m_window = nullptr;
+    if (m_engine) {
+        m_engine->collectGarbage();
+        m_engine->clearComponentCache();
+        m_engine.reset();
+    }
+    QTimer::singleShot(250, this, []() { trimProcessWorkingSet(); });
 }
 
 void AppController::setDialogOpen(bool open)
@@ -1568,6 +1607,11 @@ void AppController::handleInitialize(const QJsonValue& id, const QJsonObject& pa
     });
     startShowTriggerWatch();
     refresh();
+    QTimer::singleShot(3000, this, [this]() {
+        if (!m_shuttingDown && (!m_window || !m_window->isVisible())) {
+            trimProcessWorkingSet();
+        }
+    });
 }
 
 void AppController::handleQuery(const QJsonValue& id, const QJsonObject& params, bool hasId)
