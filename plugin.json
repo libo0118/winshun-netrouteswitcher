@@ -1,0 +1,109 @@
+{
+  "$schema": "https://raw.githubusercontent.com/LingCore/WinShun-plugins/main/schema/plugin.schema.json",
+  "manifest": 1,
+  "id": "libo0118.netrouteswitcher",
+  "name": {
+    "zh": "多网卡出口切换",
+    "en": "Net Route Switcher"
+  },
+  "version": "0.1.0",
+  "minWinShun": "0.25.0",
+  "description": {
+    "zh": "原生多网卡出口路由切换与跃点数管理工具：支持查看 IPv4/IPv6 默认出口、调整首选/备选网卡优先级、自定义跃点数、出口测速及系统托盘快捷切换。",
+    "en": "Native multi-NIC egress route switcher and interface metric manager: inspect IPv4/IPv6 default gateways, prioritize primary/secondary adapters, set custom metrics, test egress latency, and switch quickly via system tray."
+  },
+  "author": "libo0118",
+  "homepage": "https://github.com/libo0118/winshun-netrouteswitcher",
+  "license": "MIT",
+  "icon": "icon.png",
+  "runtime": {
+    "mode": "resident",
+    "program": "NetRouteSwitcher.exe",
+    "qt": "host",
+    "qtVersion": "6.12.0",
+    "start": "eager",
+    "sandbox": "normal",
+    "timeoutMs": 3000,
+    "debounceMs": 0,
+    "idleExitSec": 0,
+    "memoryMB": 256,
+    "encoding": "utf-8"
+  },
+  "permissions": [
+    "ui",
+    "elevated",
+    "processes",
+    "network"
+  ],
+  "trayMenu": {
+    "zh": "多网卡出口切换",
+    "en": "Net Route Switcher"
+  },
+  "settingsWindow": true,
+  "commands": [
+    {
+      "id": "route",
+      "keyword": ["route", "net", "网卡", "路由", "出口"],
+      "title": {
+        "zh": "多网卡出口切换",
+        "en": "Switch Network Egress"
+      },
+      "description": {
+        "zh": "查看并切换 IPv4/IPv6 默认出口网卡，调整跃点数或进行连通性测速",
+        "en": "Inspect and switch default IPv4/IPv6 egress adapters, adjust metrics, or test connectivity"
+      },
+      "hint": {
+        "zh": "输入网卡名称、IP 或关键词筛选；Enter 执行选中操作，Shift+Enter 打开管理界面",
+        "en": "Type adapter name, IP, or keyword to filter; Enter runs selected action, Shift+Enter opens panel"
+      },
+      "icon": "ph:arrows-left-right",
+      "mode": "list",
+      "actions": [
+        {
+          "id": "default",
+          "title": {
+            "zh": "执行",
+            "en": "Run"
+          },
+          "key": "Enter"
+        },
+        {
+          "id": "open-panel",
+          "title": {
+            "zh": "打开管理界面",
+            "en": "Open Panel"
+          },
+          "key": "Shift+Enter"
+        }
+      ]
+    }
+  ],
+  "settings": [
+    {
+      "key": "syncIpv6",
+      "type": "bool",
+      "title": {
+        "zh": "同步调整 IPv6 接口跃点数",
+        "en": "Synchronize IPv6 interface metrics"
+      },
+      "hint": {
+        "zh": "设为主/备选出口或恢复自动跃点数时，同步更新该网卡的 IPv6 跃点优先级",
+        "en": "Update IPv6 interface metrics alongside IPv4 when prioritizing or restoring automatic metrics"
+      },
+      "default": true
+    },
+    {
+      "key": "showDisconnected",
+      "type": "bool",
+      "title": {
+        "zh": "显示未连接的网络适配器",
+        "en": "Show disconnected network adapters"
+      },
+      "hint": {
+        "zh": "在列表与管理界面中显示当前断开连接或已禁用的物理/虚拟网卡",
+        "en": "Display disconnected or disabled adapters in search results and the management window"
+      },
+      "default": false
+    }
+  ]
+}
