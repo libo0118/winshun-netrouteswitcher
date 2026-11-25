@@ -37,6 +37,44 @@ struct WinNetworkService::Impl {
     std::function<void()> onChange;
     HANDLE interfaceNotifyHandle = nullptr;
     HANDLE routeNotifyHandle = nullptr;
+
+    void invokeWatchCallback()
+    {
+        if (stopping.load(std::memory_order_acquire)) {
+            return;
+        }
+        std::function<void()> callback;
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            if (stopping.load(std::memory_order_acquire)) {
+                return;
+            }
+            callback = onChange;
+        }
+        if (callback && !stopping.load(std::memory_order_acquire)) {
+            callback();
+        }
+    }
+
+    static VOID NETIOAPI_API_ onInterfaceChanged(
+        PVOID callerContext,
+        PMIB_IPINTERFACE_ROW /*row*/,
+        MIB_NOTIFICATION_TYPE /*notificationType*/)
+    {
+        if (auto* impl = static_cast<WinNetworkService::Impl*>(callerContext)) {
+            impl->invokeWatchCallback();
+        }
+    }
+
+    static VOID NETIOAPI_API_ onRouteChanged(
+        PVOID callerContext,
+        PMIB_IPFORWARD_ROW2 /*row*/,
+        MIB_NOTIFICATION_TYPE /*notificationType*/)
+    {
+        if (auto* impl = static_cast<WinNetworkService::Impl*>(callerContext)) {
+            impl->invokeWatchCallback();
+        }
+    }
 };
 
 namespace {
@@ -71,7 +109,7 @@ struct InterfaceMetricData {
 
 bool isNotFoundError(DWORD err)
 {
-    return err == ERROR_NOT_FOUND || err == ERROR_ELEMENT_NOT_FOUND;
+    return err == ERROR_NOT_FOUND;
 }
 
 QString formatSystemError(DWORD err)
@@ -333,40 +371,6 @@ QString pingIpv4Host(const QString& host, const QString& label)
     }
 
     return QStringLiteral("%1: %2").arg(label, formatIcmpStatus(lastErr));
-}
-
-void invokeWatchCallback(WinNetworkService::Impl* impl)
-{
-    if (!impl || impl->stopping.load(std::memory_order_acquire)) {
-        return;
-    }
-    std::function<void()> callback;
-    {
-        std::lock_guard<std::mutex> lock(impl->mutex);
-        if (impl->stopping.load(std::memory_order_acquire)) {
-            return;
-        }
-        callback = impl->onChange;
-    }
-    if (callback && !impl->stopping.load(std::memory_order_acquire)) {
-        callback();
-    }
-}
-
-VOID NETIOAPI_API_ onInterfaceChanged(
-    PVOID callerContext,
-    PMIB_IPINTERFACE_ROW /*row*/,
-    MIB_NOTIFICATION_TYPE /*notificationType*/)
-{
-    invokeWatchCallback(static_cast<WinNetworkService::Impl*>(callerContext));
-}
-
-VOID NETIOAPI_API_ onRouteChanged(
-    PVOID callerContext,
-    PMIB_IPFORWARD_ROW2 /*row*/,
-    MIB_NOTIFICATION_TYPE /*notificationType*/)
-{
-    invokeWatchCallback(static_cast<WinNetworkService::Impl*>(callerContext));
 }
 
 } // namespace
@@ -706,7 +710,7 @@ void WinNetworkService::startWatching(std::function<void()> onChange)
     HANDLE ifHandle = nullptr;
     const DWORD ifRc = ::NotifyIpInterfaceChange(
         AF_UNSPEC,
-        &onInterfaceChanged,
+        &Impl::onInterfaceChanged,
         m_impl.get(),
         FALSE,
         &ifHandle);
@@ -714,7 +718,7 @@ void WinNetworkService::startWatching(std::function<void()> onChange)
     HANDLE routeHandle = nullptr;
     const DWORD routeRc = ::NotifyRouteChange2(
         AF_UNSPEC,
-        &onRouteChanged,
+        &Impl::onRouteChanged,
         m_impl.get(),
         FALSE,
         &routeHandle);
