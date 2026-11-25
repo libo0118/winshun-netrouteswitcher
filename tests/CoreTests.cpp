@@ -552,8 +552,10 @@ void testWifiAutoSwitchRules()
     NRS_CHECK(!nrs::isPriorityOrderAlreadySatisfied({ethV6High, wlanV6Low}, {ethV6High, wlanV6Low}, true));
 
     // Non-adjacent IPv6 inversion (middle adapter has no IPv6 default route) & missing IPv4 default route
-    NRS_CHECK(nrs::isPriorityOrderAlreadySatisfied({ethV6High, usb, wlanV6Low}, {ethV6High, usb, wlanV6Low}, false));
-    NRS_CHECK(!nrs::isPriorityOrderAlreadySatisfied({ethV6High, usb, wlanV6Low}, {ethV6High, usb, wlanV6Low}, true));
+    nrs::AdapterInfo usbMid = usb;
+    usbMid.ipv4InterfaceMetric = 20; // IPv4 strictly increasing: 10 < 20 < 30
+    NRS_CHECK(nrs::isPriorityOrderAlreadySatisfied({ethV6High, usbMid, wlanV6Low}, {ethV6High, usbMid, wlanV6Low}, false));
+    NRS_CHECK(!nrs::isPriorityOrderAlreadySatisfied({ethV6High, usbMid, wlanV6Low}, {ethV6High, usbMid, wlanV6Low}, true));
     nrs::AdapterInfo gwOnly = makeInternetAdapter(40, QStringLiteral("GWOnly"), 0);
     gwOnly.hasIpv4DefaultRoute = false;
     gwOnly.ipv4RouteMetric.reset();
