@@ -306,9 +306,9 @@ void AppController::showWindow()
         if (const HWND hwnd = reinterpret_cast<HWND>(m_window->winId())) {
             ::SetForegroundWindow(hwnd);
         }
+        m_window->raise();
+        m_window->requestActivate();
     }
-    m_window->raise();
-    m_window->requestActivate();
     if (!m_hasSnapshot || !m_lastRefreshTimer.isValid() || m_lastRefreshTimer.elapsed() > 1200) {
         refresh();
     }

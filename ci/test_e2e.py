@@ -26,6 +26,13 @@ BAD_STDERR_TOKENS = (
     "failed to load",
 )
 
+IGNORED_OFFSCREEN_STDERR = (
+    "qfontdatabase: cannot find font directory",
+    "note that qt no longer ships fonts",
+    "this plugin does not support raise()",
+    "this plugin does not support propagatesizehints()",
+)
+
 
 class JsonRpcHarness:
     def __init__(self, exe_path: Path, qt_dir: Path, plugin_dir: Path, data_dir: Path) -> None:
@@ -239,7 +246,8 @@ def run_e2e(exe_path: Path, qt_dir: Path, repo_root: Path) -> None:
             assert not harness.stdout_errors, f"Stdout protocol violations: {harness.stdout_errors}"
             bad_stderr = [
                 ln for ln in harness.stderr_lines
-                if any(tok in ln.lower() for tok in BAD_STDERR_TOKENS)
+                if not any(ign in ln.lower() for ign in IGNORED_OFFSCREEN_STDERR)
+                and any(tok in ln.lower() for tok in BAD_STDERR_TOKENS)
             ]
             assert not bad_stderr, f"QML or error output detected on stderr: {bad_stderr}"
             print("[OK] E2E JSON-RPC test suite passed (all checks, incl. QML offscreen load)")
