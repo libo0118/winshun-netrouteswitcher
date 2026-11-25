@@ -4,6 +4,9 @@
 
 #include <QList>
 #include <QString>
+#include <QStringList>
+
+#include <optional>
 
 namespace nrs {
 
@@ -45,5 +48,22 @@ QString formatSplitEgressWarning(const RouteSnapshot& snap);
 QString formatTunTakeoverBadge(const RouteSnapshot& snap);
 
 bool matchesFilter(const AdapterInfo& a, const QString& keyword);
+
+bool ssidMatchesRule(const QString& currentSsid, const QString& rulePattern);
+
+std::optional<WifiRouteRule> findMatchingWifiRule(
+    const QList<WifiRouteRule>& rules,
+    const QString& currentSsid);
+
+QList<AdapterInfo> buildOrderedInternetAdaptersForRule(
+    const QList<AdapterInfo>& currentInternetAdapters,
+    const WifiRouteRule& rule);
+
+bool isPriorityOrderAlreadySatisfied(
+    const QList<AdapterInfo>& currentInternetAdapters,
+    const QList<AdapterInfo>& desiredOrder,
+    bool syncIpv6);
+
+QString formatWifiRuleOrderSummary(const QStringList& adapterOrder);
 
 } // namespace nrs

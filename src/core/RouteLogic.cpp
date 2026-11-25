@@ -1,6 +1,7 @@
 #include "core/RouteLogic.h"
 
 #include <QRegularExpression>
+#include <QSet>
 
 #include <algorithm>
 #include <limits>
@@ -429,6 +430,189 @@ bool matchesFilter(const AdapterInfo& a, const QString& keyword)
         }
     }
     return true;
+}
+
+bool ssidMatchesRule(const QString& currentSsid, const QString& rulePattern)
+{
+    if (currentSsid.trimmed().isEmpty()) {
+        return false;
+    }
+    const QString pattern = rulePattern.trimmed();
+    if (pattern.isEmpty()) {
+        return false;
+    }
+
+    const bool hasWildcard = pattern.contains(QLatin1Char('*')) || pattern.contains(QLatin1Char('?'));
+    if (!hasWildcard) {
+        return currentSsid.compare(pattern, Qt::CaseInsensitive) == 0;
+    }
+
+    QString regexPattern = QStringLiteral("\\A");
+    QString literalChunk;
+    auto flushLiteral = [&]() {
+        if (!literalChunk.isEmpty()) {
+            regexPattern.append(QRegularExpression::escape(literalChunk));
+            literalChunk.clear();
+        }
+    };
+
+    for (const QChar ch : pattern) {
+        if (ch == QLatin1Char('*')) {
+            flushLiteral();
+            regexPattern.append(QStringLiteral(".*"));
+        } else if (ch == QLatin1Char('?')) {
+            flushLiteral();
+            regexPattern.append(QLatin1Char('.'));
+        } else {
+            literalChunk.append(ch);
+        }
+    }
+    flushLiteral();
+    regexPattern.append(QStringLiteral("\\z"));
+
+    const QRegularExpression re(
+        regexPattern,
+        QRegularExpression::CaseInsensitiveOption | QRegularExpression::DotMatchesEverythingOption);
+    return re.isValid() && re.match(currentSsid).hasMatch();
+}
+
+std::optional<WifiRouteRule> findMatchingWifiRule(
+    const QList<WifiRouteRule>& rules,
+    const QString& currentSsid)
+{
+    if (currentSsid.trimmed().isEmpty()) {
+        return std::nullopt;
+    }
+
+    std::optional<WifiRouteRule> wildcardMatch;
+    for (const WifiRouteRule& rule : rules) {
+        if (!rule.enabled || rule.adapterOrder.isEmpty()) {
+            continue;
+        }
+        const bool hasValidAdapter = std::any_of(
+            rule.adapterOrder.cbegin(),
+            rule.adapterOrder.cend(),
+            [](const QString& name) { return !name.trimmed().isEmpty(); });
+        if (!hasValidAdapter) {
+            continue;
+        }
+        const QString pattern = rule.ssid.trimmed();
+        if (pattern.isEmpty()) {
+            continue;
+        }
+        if (!ssidMatchesRule(currentSsid, pattern)) {
+            continue;
+        }
+
+        const bool isWildcard = pattern.contains(QLatin1Char('*')) || pattern.contains(QLatin1Char('?'));
+        if (!isWildcard) {
+            return rule;
+        }
+        if (!wildcardMatch.has_value()) {
+            wildcardMatch = rule;
+        }
+    }
+
+    return wildcardMatch;
+}
+
+QList<AdapterInfo> buildOrderedInternetAdaptersForRule(
+    const QList<AdapterInfo>& currentInternetAdapters,
+    const WifiRouteRule& rule)
+{
+    if (currentInternetAdapters.isEmpty() || rule.adapterOrder.isEmpty()) {
+        return {};
+    }
+
+    QList<AdapterInfo> result;
+    result.reserve(currentInternetAdapters.size());
+    QSet<int> usedIfIndices;
+    int matchedCount = 0;
+
+    for (const QString& ruleName : rule.adapterOrder) {
+        const QString target = ruleName.trimmed();
+        if (target.isEmpty()) {
+            continue;
+        }
+        for (const AdapterInfo& adapter : currentInternetAdapters) {
+            if (usedIfIndices.contains(adapter.ifIndex)) {
+                continue;
+            }
+            if (adapter.name.trimmed().compare(target, Qt::CaseInsensitive) == 0) {
+                usedIfIndices.insert(adapter.ifIndex);
+                result.append(adapter);
+                ++matchedCount;
+                break;
+            }
+        }
+    }
+
+    if (matchedCount == 0) {
+        return {};
+    }
+
+    for (const AdapterInfo& adapter : currentInternetAdapters) {
+        if (!usedIfIndices.contains(adapter.ifIndex)) {
+            usedIfIndices.insert(adapter.ifIndex);
+            result.append(adapter);
+        }
+    }
+
+    return result;
+}
+
+bool isPriorityOrderAlreadySatisfied(
+    const QList<AdapterInfo>& currentInternetAdapters,
+    const QList<AdapterInfo>& desiredOrder,
+    bool syncIpv6)
+{
+    if (desiredOrder.isEmpty()) {
+        return true;
+    }
+    if (currentInternetAdapters.size() != desiredOrder.size()) {
+        return false;
+    }
+    for (qsizetype i = 0; i < desiredOrder.size(); ++i) {
+        if (currentInternetAdapters[i].ifIndex != desiredOrder[i].ifIndex) {
+            return false;
+        }
+    }
+
+    for (qsizetype i = 1; i < currentInternetAdapters.size(); ++i) {
+        const std::optional<int> currV4 = currentInternetAdapters[i].effectiveV4Metric();
+        const std::optional<int> currV6 = currentInternetAdapters[i].effectiveV6Metric();
+        for (qsizetype p = 0; p < i; ++p) {
+            if (currV4.has_value()) {
+                const std::optional<int> prevV4 = currentInternetAdapters[p].effectiveV4Metric();
+                if (prevV4.has_value() && !(*prevV4 < *currV4)) {
+                    return false;
+                }
+            }
+            if (syncIpv6 && currV6.has_value()) {
+                const std::optional<int> prevV6 = currentInternetAdapters[p].effectiveV6Metric();
+                if (prevV6.has_value() && !(*prevV6 < *currV6)) {
+                    return false;
+                }
+            }
+        }
+    }
+    return true;
+}
+
+QString formatWifiRuleOrderSummary(const QStringList& adapterOrder)
+{
+    QStringList parts;
+    parts.reserve(adapterOrder.size());
+    int index = 1;
+    for (const QString& rawName : adapterOrder) {
+        const QString name = rawName.trimmed();
+        if (name.isEmpty()) {
+            continue;
+        }
+        parts.append(QStringLiteral("%1. %2").arg(index).arg(name));
+        ++index;
+    }
+    return parts.join(QStringLiteral("  →  "));
 }
 
 } // namespace nrs

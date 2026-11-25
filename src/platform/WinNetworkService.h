@@ -4,6 +4,7 @@
 
 #include <QList>
 #include <QString>
+#include <QStringList>
 
 #include <functional>
 #include <memory>
@@ -24,6 +25,9 @@ public:
     static bool isCurrentProcessElevated();
 
     RouteSnapshot getSnapshot() const;
+
+    QString getConnectedWifiSsid() const;
+    QStringList getSavedWifiProfiles() const;
 
     OperationResult applyPriorityOrder(
         const QList<AdapterInfo>& orderedInternetAdapters,

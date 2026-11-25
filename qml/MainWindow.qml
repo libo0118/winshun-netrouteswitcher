@@ -80,8 +80,13 @@ ApplicationWindow {
         property bool boldText: false
         property real pillRadius: theme.rounded ? 10 : 0
         property int horizontalPad: 8
+        property int maxLabelWidth: 0
 
-        implicitWidth: pillLbl.implicitWidth + horizontalPad * 2
+        readonly property int effectiveLabelWidth: maxLabelWidth > 0
+            ? Math.min(pillLbl.implicitWidth, maxLabelWidth)
+            : pillLbl.implicitWidth
+
+        implicitWidth: effectiveLabelWidth + horizontalPad * 2
         implicitHeight: 22
         radius: pillRadius
         color: bgColor
@@ -91,10 +96,12 @@ ApplicationWindow {
         Text {
             id: pillLbl
             anchors.centerIn: parent
+            width: pill.effectiveLabelWidth
             text: pill.labelText
             color: pill.textColor
             font.pixelSize: theme.fontSizeCaption
             font.weight: pill.boldText ? Font.DemiBold : Font.Normal
+            elide: Text.ElideRight
         }
     }
 
@@ -187,48 +194,76 @@ ApplicationWindow {
                     Layout.fillWidth: true
                     spacing: 10
 
-                    Text {
-                        text: "当前互联网出口路由"
-                        color: theme.text
-                        font.pixelSize: theme.fontSizeTitle
-                        font.weight: Font.Bold
+                    Flow {
+                        Layout.fillWidth: true
+                        spacing: 8
+
+                        Text {
+                            height: 22
+                            verticalAlignment: Text.AlignVCenter
+                            text: "当前互联网出口路由"
+                            color: theme.text
+                            font.pixelSize: theme.fontSizeTitle
+                            font.weight: Font.Bold
+                        }
+
+                        BadgePill {
+                            labelText: controller.isElevated ? "管理员权限" : "标准权限（只读）"
+                            bgColor: controller.isElevated ? theme.successBg : theme.warningBg
+                            borderColor: controller.isElevated ? theme.successBorder : theme.warningBorder
+                            textColor: controller.isElevated ? theme.successText : theme.warningText
+                            hasBorder: true
+                            boldText: true
+                        }
+
+                        BadgePill {
+                            visible: controller.connectedWifiSsid.length > 0
+                            labelText: "Wi-Fi: " + controller.connectedWifiSsid
+                            maxLabelWidth: 180
+                            bgColor: theme.infoBg
+                            borderColor: theme.infoBorder
+                            textColor: theme.infoText
+                            hasBorder: true
+                            boldText: true
+                        }
+
+                        BadgePill {
+                            visible: controller.hasTunTakeover
+                            labelText: controller.tunTakeoverBadge
+                            maxLabelWidth: 160
+                            bgColor: theme.infoBg
+                            borderColor: theme.infoBorder
+                            textColor: theme.infoText
+                            hasBorder: true
+                            boldText: true
+                        }
                     }
 
-                    BadgePill {
-                        labelText: controller.isElevated ? "管理员权限" : "标准权限（只读）"
-                        bgColor: controller.isElevated ? theme.successBg : theme.warningBg
-                        borderColor: controller.isElevated ? theme.successBorder : theme.warningBorder
-                        textColor: controller.isElevated ? theme.successText : theme.warningText
-                        hasBorder: true
-                        boldText: true
-                    }
+                    RowLayout {
+                        Layout.alignment: Qt.AlignTop
+                        spacing: 8
 
-                    BadgePill {
-                        visible: controller.hasTunTakeover
-                        labelText: controller.tunTakeoverBadge
-                        bgColor: theme.infoBg
-                        borderColor: theme.infoBorder
-                        textColor: theme.infoText
-                        hasBorder: true
-                        boldText: true
-                    }
-
-                    Item { Layout.fillWidth: true }
-
-                    ActionBtn {
-                        text: "刷新 (F5)"
-                        enabled: !controller.busy
-                        onClicked: controller.refresh()
-                    }
-                    ActionBtn {
-                        text: "出口测速"
-                        enabled: !controller.busy
-                        onClicked: controller.testConnectivity()
-                    }
-                    ActionBtn {
-                        text: "恢复系统自动"
-                        enabled: !controller.busy && controller.internetCount > 0
-                        onClicked: controller.restoreAllAutomatic()
+                        ActionBtn {
+                            text: "刷新 (F5)"
+                            enabled: !controller.busy
+                            onClicked: controller.refresh()
+                        }
+                        ActionBtn {
+                            text: "出口测速"
+                            enabled: !controller.busy
+                            onClicked: controller.testConnectivity()
+                        }
+                        ActionBtn {
+                            text: controller.wifiRuleCount > 0
+                                ? ("自动规则 (" + controller.wifiRuleCount + ")")
+                                : "自动规则"
+                            onClicked: wifiRulesDialog.openList()
+                        }
+                        ActionBtn {
+                            text: "恢复系统自动"
+                            enabled: !controller.busy && controller.internetCount > 0
+                            onClicked: controller.restoreAllAutomatic()
+                        }
                     }
                 }
 
@@ -813,6 +848,12 @@ ApplicationWindow {
                         onToggled: controller.setShowDisconnected(checked)
                     }
 
+                    StyledCheckBox {
+                        text: "按 Wi-Fi 自动切换"
+                        checked: controller.autoSwitchByWifi
+                        onToggled: controller.setAutoSwitchByWifi(checked)
+                    }
+
                     Item { Layout.fillWidth: true }
 
                     ActionBtn {
@@ -862,5 +903,16 @@ ApplicationWindow {
 
     MetricDialog {
         id: metricDialog
+    }
+
+    WifiRulesDialog {
+        id: wifiRulesDialog
+    }
+
+    Connections {
+        target: controller
+        function onOpenWifiRulesRequested() {
+            wifiRulesDialog.openList()
+        }
     }
 }

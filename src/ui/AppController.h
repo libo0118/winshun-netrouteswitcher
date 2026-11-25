@@ -4,6 +4,7 @@
 #include "platform/WinNetworkService.h"
 #include "ui/AdapterListModel.h"
 #include "ui/ThemeObject.h"
+#include "ui/WifiRuleModel.h"
 
 #include <QElapsedTimer>
 #include <QJsonArray>
@@ -12,6 +13,7 @@
 #include <QObject>
 #include <QPointer>
 #include <QString>
+#include <QStringList>
 
 #include <atomic>
 #include <condition_variable>
@@ -52,6 +54,12 @@ class AppController : public QObject {
     Q_PROPERTY(bool statusError READ statusError NOTIFY statusChanged)
     Q_PROPERTY(bool syncIpv6 READ syncIpv6 NOTIFY settingsChanged)
     Q_PROPERTY(bool showDisconnected READ showDisconnected NOTIFY settingsChanged)
+    Q_PROPERTY(bool autoSwitchByWifi READ autoSwitchByWifi NOTIFY settingsChanged)
+    Q_PROPERTY(QString connectedWifiSsid READ connectedWifiSsid NOTIFY snapshotChanged)
+    Q_PROPERTY(nrs::WifiRuleModel* wifiRuleModel READ wifiRuleModel CONSTANT)
+    Q_PROPERTY(int wifiRuleCount READ wifiRuleCount NOTIFY wifiRulesChanged)
+    Q_PROPERTY(QStringList savedWifiProfiles READ savedWifiProfiles NOTIFY wifiProfilesChanged)
+    Q_PROPERTY(QStringList knownAdapterNames READ knownAdapterNames NOTIFY knownAdapterNamesChanged)
     Q_PROPERTY(bool standaloneMode READ standaloneMode CONSTANT)
     Q_PROPERTY(bool shuttingDown READ shuttingDown NOTIFY shuttingDownChanged)
     Q_PROPERTY(bool dialogOpen READ dialogOpen WRITE setDialogOpen NOTIFY dialogOpenChanged)
@@ -84,6 +92,12 @@ public:
     bool statusError() const { return m_statusError; }
     bool syncIpv6() const { return m_settings.syncIpv6; }
     bool showDisconnected() const { return m_settings.showDisconnected; }
+    bool autoSwitchByWifi() const { return m_settings.autoSwitchByWifi; }
+    QString connectedWifiSsid() const { return m_snapshot.connectedWifiSsid; }
+    WifiRuleModel* wifiRuleModel() const { return m_wifiRuleModel; }
+    int wifiRuleCount() const { return m_wifiRuleModel->count(); }
+    QStringList savedWifiProfiles() const { return m_savedWifiProfiles; }
+    QStringList knownAdapterNames() const;
     bool standaloneMode() const { return m_standaloneMode; }
     bool shuttingDown() const { return m_shuttingDown; }
     bool dialogOpen() const { return m_dialogOpen; }
@@ -98,6 +112,18 @@ public:
     Q_INVOKABLE void openNetworkConnections();
     Q_INVOKABLE void setSyncIpv6(bool enabled);
     Q_INVOKABLE void setShowDisconnected(bool enabled);
+    Q_INVOKABLE void setAutoSwitchByWifi(bool enabled);
+    Q_INVOKABLE void refreshWifiProfiles();
+    Q_INVOKABLE void saveWifiRule(
+        const QString& ruleId,
+        const QString& ssid,
+        const QStringList& adapterOrder,
+        bool enabled,
+        bool applyImmediately);
+    Q_INVOKABLE void deleteWifiRule(const QString& ruleId);
+    Q_INVOKABLE void setWifiRuleEnabled(const QString& ruleId, bool enabled);
+    Q_INVOKABLE void moveWifiRule(const QString& ruleId, int delta);
+    Q_INVOKABLE void applyWifiRuleNow(const QString& ruleId);
     Q_INVOKABLE void showWindow();
     Q_INVOKABLE void hideWindow();
     Q_INVOKABLE void setDialogOpen(bool open);
@@ -109,13 +135,17 @@ signals:
     void settingsChanged();
     void shuttingDownChanged();
     void dialogOpenChanged();
+    void wifiRulesChanged();
+    void wifiProfilesChanged();
+    void knownAdapterNamesChanged();
+    void openWifiRulesRequested();
 
 private:
     using CompletionFn = std::function<void()>;
 
     void startWorker();
     void stopWorker();
-    void enqueueTask(std::function<void()> task);
+    void enqueueTask(std::function<void()> task, bool trackBusy = true);
     void beginTask();
     void endTask();
     void beginShutdown();
@@ -128,8 +158,17 @@ private:
     void setStatus(const QString& message, bool isError);
     void loadFallbackSettings();
     void saveFallbackSettings() const;
+    void loadWifiRules();
+    void saveWifiRules() const;
     void pushSettingsUpdate();
     void ensureSnapshotForRpc();
+    void evaluateWifiAutoSwitch(bool forceReevaluate = false);
+    void preserveManualOverrideOnCurrentWifi(const RouteSnapshot& snapshot);
+    void applyWifiRuleInternal(
+        const WifiRouteRule& rule,
+        const QList<AdapterInfo>& desired,
+        bool isAutoSwitch,
+        const QString& labelSsid);
 
     void performSetAsPrimary(int ifIndex, std::function<void(const OperationResult&)> done);
     void performMoveAdapter(int ifIndex, int delta);
@@ -164,14 +203,21 @@ private:
     AdapterListModel* m_internetModel = nullptr;
     AdapterListModel* m_lanModel = nullptr;
     AdapterListModel* m_disconnectedModel = nullptr;
+    WifiRuleModel* m_wifiRuleModel = nullptr;
     WinNetworkService m_networkService;
     std::unique_ptr<QQmlApplicationEngine> m_engine;
     QPointer<QQuickWindow> m_window;
     QTimer* m_watchDebounceTimer = nullptr;
+    QTimer* m_wifiRetryTimer = nullptr;
     QFileSystemWatcher* m_triggerWatcher = nullptr;
 
     RouteSnapshot m_snapshot;
     PluginSettings m_settings;
+    QList<WifiRouteRule> m_wifiRules;
+    QStringList m_savedWifiProfiles;
+    QString m_lastObservedWifiSsid;
+    QString m_lastAutoEvaluatedSsid;
+    int m_wifiRetryCount = 0;
     QString m_activeV4Headline = QStringLiteral("正在检测...");
     QString m_activeV6Headline = QStringLiteral("正在检测...");
     bool m_hasSplitEgress = false;

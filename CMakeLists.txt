@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(NetRouteSwitcher VERSION 0.1.2 LANGUAGES CXX)
+project(NetRouteSwitcher VERSION 0.2.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -47,6 +47,8 @@ qt_add_executable(NetRouteSwitcher WIN32
     src/platform/WinNetworkService.cpp
     src/ui/AdapterListModel.h
     src/ui/AdapterListModel.cpp
+    src/ui/WifiRuleModel.h
+    src/ui/WifiRuleModel.cpp
     src/ui/AppController.h
     src/ui/AppController.cpp
 )
@@ -76,6 +78,7 @@ qt_add_resources(NetRouteSwitcher "nrs_res"
     FILES
         qml/MainWindow.qml
         qml/MetricDialog.qml
+        qml/WifiRulesDialog.qml
         icon.png
 )
 

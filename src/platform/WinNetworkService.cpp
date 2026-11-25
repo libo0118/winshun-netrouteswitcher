@@ -14,6 +14,7 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
+#include <wlanapi.h>
 #include <iphlpapi.h>
 #include <netioapi.h>
 #include <icmpapi.h>
@@ -37,6 +38,7 @@ struct WinNetworkService::Impl {
     std::function<void()> onChange;
     HANDLE interfaceNotifyHandle = nullptr;
     HANDLE routeNotifyHandle = nullptr;
+    HANDLE wlanNotifyHandle = nullptr;
 
     void invokeWatchCallback()
     {
@@ -73,6 +75,29 @@ struct WinNetworkService::Impl {
     {
         if (auto* impl = static_cast<WinNetworkService::Impl*>(callerContext)) {
             impl->invokeWatchCallback();
+        }
+    }
+
+    static VOID WINAPI onWlanNotification(
+        PWLAN_NOTIFICATION_DATA data,
+        PVOID context)
+    {
+        auto* impl = static_cast<WinNetworkService::Impl*>(context);
+        if (!impl || !data) {
+            return;
+        }
+        if (data->NotificationSource != WLAN_NOTIFICATION_SOURCE_ACM) {
+            return;
+        }
+        switch (data->NotificationCode) {
+        case wlan_notification_acm_connection_complete:
+        case wlan_notification_acm_disconnected:
+        case wlan_notification_acm_interface_arrival:
+        case wlan_notification_acm_interface_removal:
+            impl->invokeWatchCallback();
+            break;
+        default:
+            break;
         }
     }
 };
@@ -373,6 +398,91 @@ QString pingIpv4Host(const QString& host, const QString& label)
     return QStringLiteral("%1: %2").arg(label, formatIcmpStatus(lastErr));
 }
 
+struct WlanApi {
+    using OpenHandleFn = DWORD(WINAPI*)(DWORD, PVOID, PDWORD, PHANDLE);
+    using CloseHandleFn = DWORD(WINAPI*)(HANDLE, PVOID);
+    using EnumInterfacesFn = DWORD(WINAPI*)(HANDLE, PVOID, PWLAN_INTERFACE_INFO_LIST*);
+    using QueryInterfaceFn = DWORD(WINAPI*)(
+        HANDLE,
+        CONST GUID*,
+        WLAN_INTF_OPCODE,
+        PVOID,
+        PDWORD,
+        PVOID*,
+        PWLAN_OPCODE_VALUE_TYPE);
+    using GetProfileListFn = DWORD(WINAPI*)(HANDLE, CONST GUID*, PVOID, PWLAN_PROFILE_INFO_LIST*);
+    using RegisterNotificationFn = DWORD(WINAPI*)(
+        HANDLE,
+        DWORD,
+        BOOL,
+        WLAN_NOTIFICATION_CALLBACK,
+        PVOID,
+        PVOID,
+        PDWORD);
+    using FreeMemoryFn = VOID(WINAPI*)(PVOID);
+
+    HMODULE module = nullptr;
+    OpenHandleFn openHandle = nullptr;
+    CloseHandleFn closeHandle = nullptr;
+    EnumInterfacesFn enumInterfaces = nullptr;
+    QueryInterfaceFn queryInterface = nullptr;
+    GetProfileListFn getProfileList = nullptr;
+    RegisterNotificationFn registerNotification = nullptr;
+    FreeMemoryFn freeMemory = nullptr;
+
+    bool isAvailable() const
+    {
+        return module != nullptr
+            && openHandle != nullptr
+            && closeHandle != nullptr
+            && enumInterfaces != nullptr
+            && queryInterface != nullptr
+            && getProfileList != nullptr
+            && registerNotification != nullptr
+            && freeMemory != nullptr;
+    }
+};
+
+const WlanApi& loadWlanApi()
+{
+    static const WlanApi api = []() -> WlanApi {
+        WlanApi loaded;
+        loaded.module = ::LoadLibraryW(L"wlanapi.dll");
+        if (!loaded.module) {
+            return loaded;
+        }
+        loaded.openHandle = reinterpret_cast<WlanApi::OpenHandleFn>(
+            ::GetProcAddress(loaded.module, "WlanOpenHandle"));
+        loaded.closeHandle = reinterpret_cast<WlanApi::CloseHandleFn>(
+            ::GetProcAddress(loaded.module, "WlanCloseHandle"));
+        loaded.enumInterfaces = reinterpret_cast<WlanApi::EnumInterfacesFn>(
+            ::GetProcAddress(loaded.module, "WlanEnumInterfaces"));
+        loaded.queryInterface = reinterpret_cast<WlanApi::QueryInterfaceFn>(
+            ::GetProcAddress(loaded.module, "WlanQueryInterface"));
+        loaded.getProfileList = reinterpret_cast<WlanApi::GetProfileListFn>(
+            ::GetProcAddress(loaded.module, "WlanGetProfileList"));
+        loaded.registerNotification = reinterpret_cast<WlanApi::RegisterNotificationFn>(
+            ::GetProcAddress(loaded.module, "WlanRegisterNotification"));
+        loaded.freeMemory = reinterpret_cast<WlanApi::FreeMemoryFn>(
+            ::GetProcAddress(loaded.module, "WlanFreeMemory"));
+        if (!loaded.isAvailable()) {
+            ::FreeLibrary(loaded.module);
+            loaded = WlanApi{};
+        }
+        return loaded;
+    }();
+    return api;
+}
+
+qsizetype boundedWideLength(const wchar_t* text, qsizetype maxChars)
+{
+    qsizetype len = 0;
+    while (len < maxChars && text[len] != L'\0') {
+        ++len;
+    }
+    return len;
+}
+
 } // namespace
 
 WinNetworkService::WinNetworkService()
@@ -411,6 +521,7 @@ RouteSnapshot WinNetworkService::getSnapshot() const
 
     RouteSnapshot snap;
     snap.capturedAtIso = QDateTime::currentDateTime().toString(Qt::ISODate);
+    snap.connectedWifiSsid = getConnectedWifiSsid();
     snap.osActiveV4IfIndex = getBestInterfaceIndex(AF_INET, L"223.5.5.5");
     snap.osActiveV6IfIndex = getBestInterfaceIndex(AF_INET6, L"2400:3200::1");
     snap.activeV4IfIndex = snap.osActiveV4IfIndex;
@@ -552,6 +663,132 @@ RouteSnapshot WinNetworkService::getSnapshot() const
     sortAdapters(snap.adapters);
     resolvePhysicalEgress(snap);
     return snap;
+}
+
+QString WinNetworkService::getConnectedWifiSsid() const
+{
+    const WlanApi& api = loadWlanApi();
+    if (!api.isAvailable()) {
+        return {};
+    }
+
+    DWORD negotiatedVersion = 0;
+    HANDLE clientHandle = nullptr;
+    if (api.openHandle(WLAN_API_VERSION_2_0, nullptr, &negotiatedVersion, &clientHandle) != ERROR_SUCCESS
+        || clientHandle == nullptr) {
+        return {};
+    }
+
+    QString ssidText;
+    PWLAN_INTERFACE_INFO_LIST ifList = nullptr;
+    if (api.enumInterfaces(clientHandle, nullptr, &ifList) == ERROR_SUCCESS && ifList != nullptr) {
+        for (DWORD i = 0; i < ifList->dwNumberOfItems; ++i) {
+            const WLAN_INTERFACE_INFO& iface = ifList->InterfaceInfo[i];
+            if (iface.isState != wlan_interface_state_connected) {
+                continue;
+            }
+
+            DWORD dataSize = 0;
+            PVOID rawData = nullptr;
+            WLAN_OPCODE_VALUE_TYPE valueType = wlan_opcode_value_type_invalid;
+            const DWORD qRc = api.queryInterface(
+                clientHandle,
+                &iface.InterfaceGuid,
+                wlan_intf_opcode_current_connection,
+                nullptr,
+                &dataSize,
+                &rawData,
+                &valueType);
+            if (qRc == ERROR_SUCCESS && rawData != nullptr) {
+                if (dataSize >= sizeof(WLAN_CONNECTION_ATTRIBUTES)) {
+                    const auto* conn = static_cast<const WLAN_CONNECTION_ATTRIBUTES*>(rawData);
+                    if (conn->isState == wlan_interface_state_connected) {
+                        const DOT11_SSID& ssid = conn->wlanAssociationAttributes.dot11Ssid;
+                        const ULONG ssidLen = std::min<ULONG>(
+                            ssid.uSSIDLength,
+                            static_cast<ULONG>(sizeof(ssid.ucSSID)));
+                        if (ssidLen > 0) {
+                            ssidText = QString::fromUtf8(
+                                reinterpret_cast<const char*>(ssid.ucSSID),
+                                static_cast<int>(ssidLen));
+                        } else {
+                            const qsizetype profileLen = boundedWideLength(
+                                conn->strProfileName,
+                                static_cast<qsizetype>(WLAN_MAX_NAME_LENGTH));
+                            if (profileLen > 0) {
+                                ssidText = QString::fromWCharArray(conn->strProfileName, profileLen);
+                            }
+                        }
+                    }
+                }
+                api.freeMemory(rawData);
+                if (!ssidText.isEmpty()) {
+                    break;
+                }
+            } else if (rawData != nullptr) {
+                api.freeMemory(rawData);
+            }
+        }
+        api.freeMemory(ifList);
+    }
+
+    api.closeHandle(clientHandle, nullptr);
+    return ssidText;
+}
+
+QStringList WinNetworkService::getSavedWifiProfiles() const
+{
+    QStringList profiles;
+    const WlanApi& api = loadWlanApi();
+    if (!api.isAvailable()) {
+        return profiles;
+    }
+
+    DWORD negotiatedVersion = 0;
+    HANDLE clientHandle = nullptr;
+    if (api.openHandle(WLAN_API_VERSION_2_0, nullptr, &negotiatedVersion, &clientHandle) != ERROR_SUCCESS
+        || clientHandle == nullptr) {
+        return profiles;
+    }
+
+    QSet<QString> seen;
+    PWLAN_INTERFACE_INFO_LIST ifList = nullptr;
+    if (api.enumInterfaces(clientHandle, nullptr, &ifList) == ERROR_SUCCESS && ifList != nullptr) {
+        for (DWORD i = 0; i < ifList->dwNumberOfItems; ++i) {
+            const WLAN_INTERFACE_INFO& iface = ifList->InterfaceInfo[i];
+            PWLAN_PROFILE_INFO_LIST profileList = nullptr;
+            const DWORD pRc = api.getProfileList(
+                clientHandle,
+                &iface.InterfaceGuid,
+                nullptr,
+                &profileList);
+            if (pRc == ERROR_SUCCESS && profileList != nullptr) {
+                for (DWORD j = 0; j < profileList->dwNumberOfItems; ++j) {
+                    const WLAN_PROFILE_INFO& info = profileList->ProfileInfo[j];
+                    const qsizetype len = boundedWideLength(
+                        info.strProfileName,
+                        static_cast<qsizetype>(WLAN_MAX_NAME_LENGTH));
+                    const QString name = QString::fromWCharArray(info.strProfileName, len);
+                    if (name.trimmed().isEmpty()) {
+                        continue;
+                    }
+                    const QString key = name.toLower();
+                    if (seen.contains(key)) {
+                        continue;
+                    }
+                    seen.insert(key);
+                    profiles.append(name);
+                }
+                api.freeMemory(profileList);
+            } else if (profileList != nullptr) {
+                api.freeMemory(profileList);
+            }
+        }
+        api.freeMemory(ifList);
+    }
+
+    api.closeHandle(clientHandle, nullptr);
+    return profiles;
 }
 
 OperationResult WinNetworkService::applyPriorityOrder(
@@ -728,12 +965,65 @@ void WinNetworkService::startWatching(std::function<void()> onChange)
         FALSE,
         &routeHandle);
 
-    std::lock_guard<std::mutex> lock(m_impl->mutex);
-    if (ifRc == NO_ERROR) {
-        m_impl->interfaceNotifyHandle = ifHandle;
+    HANDLE wlanHandle = nullptr;
+    const WlanApi& wlanApi = loadWlanApi();
+    if (wlanApi.isAvailable()) {
+        DWORD negotiatedVersion = 0;
+        if (wlanApi.openHandle(WLAN_API_VERSION_2_0, nullptr, &negotiatedVersion, &wlanHandle) == ERROR_SUCCESS
+            && wlanHandle != nullptr) {
+            const DWORD regRc = wlanApi.registerNotification(
+                wlanHandle,
+                WLAN_NOTIFICATION_SOURCE_ACM,
+                TRUE,
+                &Impl::onWlanNotification,
+                m_impl.get(),
+                nullptr,
+                nullptr);
+            if (regRc != ERROR_SUCCESS) {
+                wlanApi.closeHandle(wlanHandle, nullptr);
+                wlanHandle = nullptr;
+            }
+        } else {
+            wlanHandle = nullptr;
+        }
     }
-    if (routeRc == NO_ERROR) {
-        m_impl->routeNotifyHandle = routeHandle;
+
+    bool cancelledEarly = false;
+    {
+        std::lock_guard<std::mutex> lock(m_impl->mutex);
+        if (m_impl->stopping.load(std::memory_order_acquire)) {
+            cancelledEarly = true;
+        } else {
+            if (ifRc == NO_ERROR) {
+                m_impl->interfaceNotifyHandle = ifHandle;
+            }
+            if (routeRc == NO_ERROR) {
+                m_impl->routeNotifyHandle = routeHandle;
+            }
+            if (wlanHandle != nullptr) {
+                m_impl->wlanNotifyHandle = wlanHandle;
+            }
+        }
+    }
+
+    if (cancelledEarly) {
+        if (ifRc == NO_ERROR && ifHandle != nullptr) {
+            ::CancelMibChangeNotify2(ifHandle);
+        }
+        if (routeRc == NO_ERROR && routeHandle != nullptr) {
+            ::CancelMibChangeNotify2(routeHandle);
+        }
+        if (wlanHandle != nullptr && wlanApi.isAvailable()) {
+            wlanApi.registerNotification(
+                wlanHandle,
+                WLAN_NOTIFICATION_SOURCE_NONE,
+                TRUE,
+                nullptr,
+                nullptr,
+                nullptr,
+                nullptr);
+            wlanApi.closeHandle(wlanHandle, nullptr);
+        }
     }
 }
 
@@ -747,10 +1037,12 @@ void WinNetworkService::stopWatching()
 
     HANDLE ifHandle = nullptr;
     HANDLE routeHandle = nullptr;
+    HANDLE wlanHandle = nullptr;
     {
         std::lock_guard<std::mutex> lock(m_impl->mutex);
         ifHandle = std::exchange(m_impl->interfaceNotifyHandle, nullptr);
         routeHandle = std::exchange(m_impl->routeNotifyHandle, nullptr);
+        wlanHandle = std::exchange(m_impl->wlanNotifyHandle, nullptr);
     }
 
     if (ifHandle != nullptr) {
@@ -758,6 +1050,20 @@ void WinNetworkService::stopWatching()
     }
     if (routeHandle != nullptr) {
         ::CancelMibChangeNotify2(routeHandle);
+    }
+    if (wlanHandle != nullptr) {
+        const WlanApi& wlanApi = loadWlanApi();
+        if (wlanApi.isAvailable()) {
+            wlanApi.registerNotification(
+                wlanHandle,
+                WLAN_NOTIFICATION_SOURCE_NONE,
+                TRUE,
+                nullptr,
+                nullptr,
+                nullptr,
+                nullptr);
+            wlanApi.closeHandle(wlanHandle, nullptr);
+        }
     }
 
     std::lock_guard<std::mutex> lock(m_impl->mutex);

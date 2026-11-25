@@ -1,7 +1,10 @@
 #pragma once
 
+#include <QJsonArray>
 #include <QJsonObject>
+#include <QJsonValue>
 #include <QList>
+#include <QSet>
 #include <QString>
 #include <QStringList>
 #include <QtGlobal>
@@ -75,6 +78,7 @@ struct RouteSnapshot {
     std::optional<int> tunTakeoverV4IfIndex;
     std::optional<int> tunTakeoverV6IfIndex;
     QString capturedAtIso;
+    QString connectedWifiSsid;
 
     const AdapterInfo* findByIfIndex(int ifIndex) const
     {
@@ -132,9 +136,70 @@ struct OperationResult {
     int win32Error = 0;
 };
 
+struct WifiRouteRule {
+    QString id;
+    QString ssid;
+    QStringList adapterOrder;
+    bool enabled = true;
+
+    bool operator==(const WifiRouteRule&) const = default;
+
+    static WifiRouteRule fromJson(const QJsonObject& obj)
+    {
+        WifiRouteRule r;
+        r.id = obj.value(QStringLiteral("id")).toString();
+        r.ssid = obj.value(QStringLiteral("ssid")).toString();
+        if (obj.contains(QStringLiteral("enabled"))) {
+            r.enabled = obj.value(QStringLiteral("enabled")).toBool(true);
+        }
+
+        const QJsonArray arr = obj.value(QStringLiteral("adapterOrder")).toArray();
+        QSet<QString> seen;
+        r.adapterOrder.reserve(arr.size());
+        for (const QJsonValue& val : arr) {
+            const QString name = val.toString().trimmed();
+            if (name.isEmpty()) {
+                continue;
+            }
+            const QString key = name.toLower();
+            if (seen.contains(key)) {
+                continue;
+            }
+            seen.insert(key);
+            r.adapterOrder.append(name);
+        }
+        return r;
+    }
+
+    QJsonObject toJson() const
+    {
+        QJsonArray arr;
+        QSet<QString> seen;
+        for (const QString& raw : adapterOrder) {
+            const QString name = raw.trimmed();
+            if (name.isEmpty()) {
+                continue;
+            }
+            const QString key = name.toLower();
+            if (seen.contains(key)) {
+                continue;
+            }
+            seen.insert(key);
+            arr.append(name);
+        }
+        return QJsonObject{
+            {QStringLiteral("id"), id},
+            {QStringLiteral("ssid"), ssid},
+            {QStringLiteral("adapterOrder"), arr},
+            {QStringLiteral("enabled"), enabled},
+        };
+    }
+};
+
 struct PluginSettings {
     bool syncIpv6 = true;
     bool showDisconnected = false;
+    bool autoSwitchByWifi = true;
 
     static PluginSettings fromJson(const QJsonObject& obj)
     {
@@ -145,6 +210,9 @@ struct PluginSettings {
         if (obj.contains(QStringLiteral("showDisconnected"))) {
             s.showDisconnected = obj.value(QStringLiteral("showDisconnected")).toBool(false);
         }
+        if (obj.contains(QStringLiteral("autoSwitchByWifi"))) {
+            s.autoSwitchByWifi = obj.value(QStringLiteral("autoSwitchByWifi")).toBool(true);
+        }
         return s;
     }
 
@@ -153,6 +221,7 @@ struct PluginSettings {
         return QJsonObject{
             {QStringLiteral("syncIpv6"), syncIpv6},
             {QStringLiteral("showDisconnected"), showDisconnected},
+            {QStringLiteral("autoSwitchByWifi"), autoSwitchByWifi},
         };
     }
 };

@@ -3,6 +3,7 @@
 #include "core/ThemeData.h"
 
 #include <QColor>
+#include <QJsonArray>
 #include <QJsonObject>
 #include <QList>
 #include <QString>
@@ -428,6 +429,181 @@ void testThemeDataFromAppearance()
     ++g_passedGroups;
 }
 
+void testWifiAutoSwitchRules()
+{
+    // 1. SSID matching: exact (case-insensitive) & wildcards (* / ?) & edge cases
+    NRS_CHECK(!nrs::ssidMatchesRule(QStringLiteral(""), QStringLiteral("Office")));
+    NRS_CHECK(!nrs::ssidMatchesRule(QStringLiteral("   "), QStringLiteral("Office")));
+    NRS_CHECK(!nrs::ssidMatchesRule(QStringLiteral("Office"), QStringLiteral("")));
+    NRS_CHECK(!nrs::ssidMatchesRule(QStringLiteral("Office"), QStringLiteral("   ")));
+
+    NRS_CHECK(nrs::ssidMatchesRule(QStringLiteral("Office-5G"), QStringLiteral("office-5g")));
+    NRS_CHECK(nrs::ssidMatchesRule(QStringLiteral("Corp WiFi (5G)"), QStringLiteral("  corp wifi (5g)  ")));
+    NRS_CHECK(!nrs::ssidMatchesRule(QStringLiteral("Office-5G"), QStringLiteral("Office-5")));
+    NRS_CHECK(nrs::ssidMatchesRule(QStringLiteral("公司办公网"), QStringLiteral("公司办公网")));
+
+    NRS_CHECK(nrs::ssidMatchesRule(QStringLiteral("Office-5G"), QStringLiteral("Office-*")));
+    NRS_CHECK(nrs::ssidMatchesRule(QStringLiteral("Office-5G"), QStringLiteral("office-?g")));
+    NRS_CHECK(!nrs::ssidMatchesRule(QStringLiteral("Office-5GHz"), QStringLiteral("Office-?G")));
+    NRS_CHECK(nrs::ssidMatchesRule(QStringLiteral("Dept.(A)+Test"), QStringLiteral("dept.(a)+*")));
+    NRS_CHECK(!nrs::ssidMatchesRule(QStringLiteral("MyOffice-5G"), QStringLiteral("Office-*")));
+
+    // 2. Rule priority: exact > wildcard, earlier wins within same tier, skip disabled/empty
+    const nrs::WifiRouteRule disabledExact{
+        QStringLiteral("r-disabled"),
+        QStringLiteral("Office-5G"),
+        {QStringLiteral("USB")},
+        false,
+    };
+    const nrs::WifiRouteRule emptySsid{
+        QStringLiteral("r-empty-ssid"),
+        QStringLiteral("   "),
+        {QStringLiteral("WLAN")},
+        true,
+    };
+    const nrs::WifiRouteRule emptyOrder{
+        QStringLiteral("r-empty-order"),
+        QStringLiteral("Office-5G"),
+        {},
+        true,
+    };
+    const nrs::WifiRouteRule wildcardFirst{
+        QStringLiteral("r-wild-1"),
+        QStringLiteral("Office-*"),
+        {QStringLiteral("以太网 2"), QStringLiteral("WLAN")},
+        true,
+    };
+    const nrs::WifiRouteRule wildcardSecond{
+        QStringLiteral("r-wild-2"),
+        QStringLiteral("Office-?G"),
+        {QStringLiteral("WLAN")},
+        true,
+    };
+    const nrs::WifiRouteRule exactRule{
+        QStringLiteral("r-exact"),
+        QStringLiteral("office-5g"),
+        {QStringLiteral("WLAN"), QStringLiteral("以太网 2")},
+        true,
+    };
+
+    const QList<nrs::WifiRouteRule> rules = {
+        disabledExact, emptySsid, emptyOrder, wildcardFirst, wildcardSecond, exactRule,
+    };
+    NRS_CHECK(!nrs::findMatchingWifiRule(rules, QStringLiteral("")).has_value());
+    NRS_CHECK(!nrs::findMatchingWifiRule(rules, QStringLiteral("HomeWiFi")).has_value());
+
+    const auto matchedExact = nrs::findMatchingWifiRule(rules, QStringLiteral("Office-5G"));
+    NRS_CHECK(matchedExact.has_value());
+    NRS_CHECK_EQ(matchedExact->id, QStringLiteral("r-exact"));
+
+    const auto matchedWild = nrs::findMatchingWifiRule(rules, QStringLiteral("Office-2G"));
+    NRS_CHECK(matchedWild.has_value());
+    NRS_CHECK_EQ(matchedWild->id, QStringLiteral("r-wild-1"));
+
+    // 3. buildOrderedInternetAdaptersForRule
+    nrs::AdapterInfo eth = makeInternetAdapter(10, QStringLiteral("以太网 2"), 0, 0);
+    eth.ipv4InterfaceMetric = 10;
+    eth.ipv6InterfaceMetric = 10;
+    nrs::AdapterInfo wlan = makeInternetAdapter(20, QStringLiteral("WLAN"), 0, 0);
+    wlan.ipv4InterfaceMetric = 30;
+    wlan.ipv6InterfaceMetric = 30;
+    nrs::AdapterInfo usb = makeInternetAdapter(30, QStringLiteral("USB 共享"), 0, std::nullopt);
+    usb.ipv4InterfaceMetric = 50;
+
+    const QList<nrs::AdapterInfo> currentInternet = {eth, wlan, usb};
+    const nrs::WifiRouteRule reorderRule{
+        QStringLiteral("r-order"),
+        QStringLiteral("Office-5G"),
+        {QStringLiteral("wlan"), QStringLiteral("不存在网卡"), QStringLiteral("WLAN")},
+        true,
+    };
+    const QList<nrs::AdapterInfo> built = nrs::buildOrderedInternetAdaptersForRule(currentInternet, reorderRule);
+    NRS_CHECK_EQ(built.size(), 3);
+    NRS_CHECK_EQ(built[0].ifIndex, 20);
+    NRS_CHECK_EQ(built[1].ifIndex, 10);
+    NRS_CHECK_EQ(built[2].ifIndex, 30);
+
+    const nrs::WifiRouteRule unmatchedRule{
+        QStringLiteral("r-none"),
+        QStringLiteral("Office-5G"),
+        {QStringLiteral("离线网卡A"), QStringLiteral("离线网卡B")},
+        true,
+    };
+    NRS_CHECK(nrs::buildOrderedInternetAdaptersForRule(currentInternet, unmatchedRule).isEmpty());
+
+    // 4. isPriorityOrderAlreadySatisfied
+    NRS_CHECK(nrs::isPriorityOrderAlreadySatisfied(currentInternet, {}, true));
+    NRS_CHECK(!nrs::isPriorityOrderAlreadySatisfied(currentInternet, {eth, wlan}, true));
+    NRS_CHECK(!nrs::isPriorityOrderAlreadySatisfied(currentInternet, built, true));
+    NRS_CHECK(nrs::isPriorityOrderAlreadySatisfied(currentInternet, currentInternet, true));
+    NRS_CHECK(nrs::isPriorityOrderAlreadySatisfied({eth}, {eth}, true));
+
+    // Tie in effectiveV4Metric is not strictly satisfied
+    nrs::AdapterInfo wlanTied = wlan;
+    wlanTied.ipv4InterfaceMetric = 10;
+    NRS_CHECK(!nrs::isPriorityOrderAlreadySatisfied({eth, wlanTied}, {eth, wlanTied}, false));
+
+    // IPv4 strictly increasing (10 < 30), IPv6 reversed (300 > 10)
+    nrs::AdapterInfo ethV6High = eth;
+    ethV6High.ipv6RouteMetric = 290; // effV6 = 300
+    nrs::AdapterInfo wlanV6Low = wlan;
+    wlanV6Low.ipv6InterfaceMetric = 10; // effV6 = 10
+    NRS_CHECK(nrs::isPriorityOrderAlreadySatisfied({ethV6High, wlanV6Low}, {ethV6High, wlanV6Low}, false));
+    NRS_CHECK(!nrs::isPriorityOrderAlreadySatisfied({ethV6High, wlanV6Low}, {ethV6High, wlanV6Low}, true));
+
+    // Non-adjacent IPv6 inversion (middle adapter has no IPv6 default route) & missing IPv4 default route
+    NRS_CHECK(nrs::isPriorityOrderAlreadySatisfied({ethV6High, usb, wlanV6Low}, {ethV6High, usb, wlanV6Low}, false));
+    NRS_CHECK(!nrs::isPriorityOrderAlreadySatisfied({ethV6High, usb, wlanV6Low}, {ethV6High, usb, wlanV6Low}, true));
+    nrs::AdapterInfo gwOnly = makeInternetAdapter(40, QStringLiteral("GWOnly"), 0);
+    gwOnly.hasIpv4DefaultRoute = false;
+    gwOnly.ipv4RouteMetric.reset();
+    NRS_CHECK(nrs::isPriorityOrderAlreadySatisfied({eth, gwOnly}, {eth, gwOnly}, true));
+
+    // 5. formatWifiRuleOrderSummary & serialization
+    NRS_CHECK_EQ(
+        nrs::formatWifiRuleOrderSummary({QStringLiteral("WLAN"), QStringLiteral("以太网 2")}),
+        QStringLiteral("1. WLAN  →  2. 以太网 2"));
+    NRS_CHECK_EQ(nrs::formatWifiRuleOrderSummary({QStringLiteral("WLAN")}), QStringLiteral("1. WLAN"));
+    NRS_CHECK(nrs::formatWifiRuleOrderSummary({}).isEmpty());
+
+    const QJsonObject dirtyRuleJson{
+        {QStringLiteral("id"), QStringLiteral("rule-1")},
+        {QStringLiteral("ssid"), QStringLiteral("Cafe-*")},
+        {QStringLiteral("adapterOrder"), QJsonArray{
+            QStringLiteral("WLAN"),
+            QStringLiteral(""),
+            QStringLiteral("   "),
+            QStringLiteral("wlan"),
+            QStringLiteral("以太网 2"),
+            QStringLiteral("以太网 2"),
+        }},
+        {QStringLiteral("enabled"), false},
+    };
+    const nrs::WifiRouteRule parsedRule = nrs::WifiRouteRule::fromJson(dirtyRuleJson);
+    NRS_CHECK_EQ(parsedRule.id, QStringLiteral("rule-1"));
+    NRS_CHECK_EQ(parsedRule.ssid, QStringLiteral("Cafe-*"));
+    NRS_CHECK_EQ(parsedRule.enabled, false);
+    NRS_CHECK_EQ(parsedRule.adapterOrder, (QStringList{QStringLiteral("WLAN"), QStringLiteral("以太网 2")}));
+    NRS_CHECK_EQ(nrs::WifiRouteRule::fromJson(parsedRule.toJson()), parsedRule);
+
+    const nrs::PluginSettings legacySettings = nrs::PluginSettings::fromJson(QJsonObject{
+        {QStringLiteral("syncIpv6"), false},
+        {QStringLiteral("showDisconnected"), true},
+    });
+    NRS_CHECK_EQ(legacySettings.autoSwitchByWifi, true);
+
+    const nrs::PluginSettings wifiOffSettings{true, false, false};
+    const nrs::PluginSettings wifiOffRestored = nrs::PluginSettings::fromJson(wifiOffSettings.toJson());
+    NRS_CHECK_EQ(wifiOffRestored.syncIpv6, true);
+    NRS_CHECK_EQ(wifiOffRestored.showDisconnected, false);
+    NRS_CHECK_EQ(wifiOffRestored.autoSwitchByWifi, false);
+
+    nrs::RouteSnapshot snap;
+    snap.connectedWifiSsid = QStringLiteral("Office-5G");
+    NRS_CHECK_EQ(snap.connectedWifiSsid, QStringLiteral("Office-5G"));
+    ++g_passedGroups;
+}
+
 } // namespace
 
 int main()
@@ -440,6 +616,7 @@ int main()
     testActiveEgressAndSplitWarning();
     testTunTakeoverResolvesPhysicalEgress();
     testThemeDataFromAppearance();
+    testWifiAutoSwitchRules();
 
     if (g_failures > 0) {
         std::cerr << "CoreTests FAILED with " << g_failures << " failure(s).\n";

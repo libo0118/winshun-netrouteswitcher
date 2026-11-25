@@ -16,9 +16,11 @@
 #include <QQuickWindow>
 #include <QRegularExpression>
 #include <QSaveFile>
+#include <QSet>
 #include <QStandardPaths>
 #include <QStyleHints>
 #include <QTimer>
+#include <QUuid>
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -96,6 +98,24 @@ ThemeData standaloneThemeFromSystem()
     return isDark ? ThemeData{} : ThemeData::lightDefaults();
 }
 
+QStringList dedupeTrimmedNames(const QStringList& input)
+{
+    QStringList out;
+    QSet<QString> seenLower;
+    for (const QString& raw : input) {
+        const QString trimmed = raw.trimmed();
+        if (trimmed.isEmpty()) {
+            continue;
+        }
+        const QString key = trimmed.toLower();
+        if (!seenLower.contains(key)) {
+            seenLower.insert(key);
+            out.append(trimmed);
+        }
+    }
+    return out;
+}
+
 } // namespace
 
 AppController::AppController(
@@ -112,7 +132,9 @@ AppController::AppController(
     , m_internetModel(new AdapterListModel(this))
     , m_lanModel(new AdapterListModel(this))
     , m_disconnectedModel(new AdapterListModel(this))
+    , m_wifiRuleModel(new WifiRuleModel(this))
     , m_watchDebounceTimer(new QTimer(this))
+    , m_wifiRetryTimer(new QTimer(this))
 {
     m_watchDebounceTimer->setSingleShot(true);
     m_watchDebounceTimer->setInterval(600);
@@ -120,6 +142,19 @@ AppController::AppController(
         if (!m_shuttingDown && !busy()) {
             refresh();
         }
+    });
+
+    m_wifiRetryTimer->setSingleShot(true);
+    m_wifiRetryTimer->setInterval(1500);
+    connect(m_wifiRetryTimer, &QTimer::timeout, this, [this]() {
+        if (m_shuttingDown) {
+            return;
+        }
+        if (busy()) {
+            m_wifiRetryTimer->start();
+            return;
+        }
+        refresh();
     });
 
     startWorker();
@@ -151,6 +186,7 @@ AppController::AppController(
             });
         }
         loadFallbackSettings();
+        loadWifiRules();
         emit settingsChanged();
         m_initialized = true;
         const QPointer<AppController> self(this);
@@ -212,12 +248,14 @@ void AppController::stopWorker()
     }
 }
 
-void AppController::enqueueTask(std::function<void()> task)
+void AppController::enqueueTask(std::function<void()> task, bool trackBusy)
 {
     if (m_shuttingDown || m_workerStopping.load(std::memory_order_acquire)) {
         return;
     }
-    beginTask();
+    if (trackBusy) {
+        beginTask();
+    }
     {
         std::lock_guard<std::mutex> lock(m_queueMutex);
         m_taskQueue.push_back(std::move(task));
@@ -253,6 +291,9 @@ void AppController::beginShutdown()
     }
     if (m_watchDebounceTimer && m_watchDebounceTimer->isActive()) {
         m_watchDebounceTimer->stop();
+    }
+    if (m_wifiRetryTimer && m_wifiRetryTimer->isActive()) {
+        m_wifiRetryTimer->stop();
     }
     stopShowTriggerWatch();
     m_networkService.stopWatching();
@@ -432,7 +473,9 @@ void AppController::applySnapshot(const RouteSnapshot& snapshot)
         snapshot.activeV6IfIndex,
         snapshot.tunTakeoverV4IfIndex,
         snapshot.tunTakeoverV6IfIndex);
+    m_wifiRuleModel->setCurrentSsid(snapshot.connectedWifiSsid);
     emit snapshotChanged();
+    emit knownAdapterNamesChanged();
 }
 
 void AppController::setStatus(const QString& message, bool isError)
@@ -485,6 +528,83 @@ void AppController::ensureSnapshotForRpc()
 {
     if (!m_hasSnapshot || !m_lastRefreshTimer.isValid() || m_lastRefreshTimer.elapsed() > 1500) {
         applySnapshot(m_networkService.getSnapshot());
+        evaluateWifiAutoSwitch(false);
+    }
+}
+
+QStringList AppController::knownAdapterNames() const
+{
+    QStringList rawNames;
+    for (const AdapterInfo& a : m_snapshot.adapters) {
+        if (a.category == AdapterCategory::Internet) {
+            rawNames.append(a.name);
+        }
+    }
+    for (const AdapterInfo& a : m_snapshot.adapters) {
+        if (a.category != AdapterCategory::Internet
+            && a.kind != AdapterKind::VirtualTunnel) {
+            rawNames.append(a.name);
+        }
+    }
+    for (const WifiRouteRule& rule : m_wifiRules) {
+        rawNames.append(rule.adapterOrder);
+    }
+    return dedupeTrimmedNames(rawNames);
+}
+
+void AppController::loadWifiRules()
+{
+    m_wifiRules.clear();
+    if (!m_dataDir.trimmed().isEmpty()) {
+        QFile file(QDir(m_dataDir).filePath(QStringLiteral("wifi-rules.json")));
+        if (file.open(QIODevice::ReadOnly)) {
+            const QJsonDocument doc = QJsonDocument::fromJson(file.readAll());
+            if (doc.isObject()) {
+                const QJsonArray arr = doc.object().value(QStringLiteral("rules")).toArray();
+                QSet<QString> seenIds;
+                for (const QJsonValue& val : arr) {
+                    if (!val.isObject()) {
+                        continue;
+                    }
+                    WifiRouteRule rule = WifiRouteRule::fromJson(val.toObject());
+                    rule.ssid = rule.ssid.trimmed();
+                    rule.adapterOrder = dedupeTrimmedNames(rule.adapterOrder);
+                    if (rule.ssid.isEmpty() || rule.adapterOrder.isEmpty()) {
+                        continue;
+                    }
+                    rule.id = rule.id.trimmed();
+                    if (rule.id.isEmpty() || seenIds.contains(rule.id)) {
+                        rule.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+                    }
+                    seenIds.insert(rule.id);
+                    m_wifiRules.append(std::move(rule));
+                }
+            }
+        }
+    }
+    m_wifiRuleModel->setRules(m_wifiRules, m_snapshot.connectedWifiSsid);
+    emit wifiRulesChanged();
+    emit knownAdapterNamesChanged();
+}
+
+void AppController::saveWifiRules() const
+{
+    if (m_dataDir.trimmed().isEmpty()) {
+        return;
+    }
+    QDir().mkpath(m_dataDir);
+    QJsonArray rulesArr;
+    for (const WifiRouteRule& rule : m_wifiRules) {
+        rulesArr.append(rule.toJson());
+    }
+    const QJsonObject root{
+        {QStringLiteral("version"), 1},
+        {QStringLiteral("rules"), rulesArr},
+    };
+    QSaveFile file(QDir(m_dataDir).filePath(QStringLiteral("wifi-rules.json")));
+    if (file.open(QIODevice::WriteOnly)) {
+        file.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
+        file.commit();
     }
 }
 
@@ -515,6 +635,7 @@ void AppController::refresh()
                 : QStringLiteral("已刷新（%1）· 共 %2 个互联网出口网卡").arg(timeStr).arg(self->internetCount());
             self->setStatus(msg, false);
             self->endTask();
+            self->evaluateWifiAutoSwitch(false);
         }, Qt::QueuedConnection);
     });
 }
@@ -581,6 +702,407 @@ void AppController::setShowDisconnected(bool enabled)
     pushSettingsUpdate();
 }
 
+void AppController::setAutoSwitchByWifi(bool enabled)
+{
+    if (m_settings.autoSwitchByWifi == enabled) {
+        return;
+    }
+    m_settings.autoSwitchByWifi = enabled;
+    emit settingsChanged();
+    pushSettingsUpdate();
+    if (!enabled) {
+        if (m_wifiRetryTimer && m_wifiRetryTimer->isActive()) {
+            m_wifiRetryTimer->stop();
+        }
+        m_wifiRetryCount = 0;
+        setStatus(QStringLiteral("已关闭按 Wi-Fi 自动切换。"), false);
+    } else {
+        setStatus(QStringLiteral("已开启按 Wi-Fi 自动切换。"), false);
+        evaluateWifiAutoSwitch(true);
+    }
+}
+
+void AppController::refreshWifiProfiles()
+{
+    if (m_shuttingDown) {
+        return;
+    }
+    const QPointer<AppController> self(this);
+    enqueueTask([this, self]() {
+        if (m_workerStopping.load(std::memory_order_acquire)) {
+            return;
+        }
+        QStringList profiles = dedupeTrimmedNames(m_networkService.getSavedWifiProfiles());
+        if (m_workerStopping.load(std::memory_order_acquire)) {
+            return;
+        }
+        QMetaObject::invokeMethod(this, [self, profiles = std::move(profiles)]() mutable {
+            if (!self || self->m_shuttingDown) {
+                return;
+            }
+            if (self->m_savedWifiProfiles != profiles) {
+                self->m_savedWifiProfiles = std::move(profiles);
+                emit self->wifiProfilesChanged();
+            }
+        }, Qt::QueuedConnection);
+    }, false);
+}
+
+void AppController::saveWifiRule(
+    const QString& ruleId,
+    const QString& ssid,
+    const QStringList& adapterOrder,
+    bool enabled,
+    bool applyImmediately)
+{
+    const QString cleanSsid = ssid.trimmed();
+    const QStringList cleanOrder = dedupeTrimmedNames(adapterOrder);
+    if (cleanSsid.isEmpty() || cleanOrder.isEmpty()) {
+        setStatus(QStringLiteral("保存 Wi-Fi 规则失败：SSID 与网卡优先顺序不能为空。"), true);
+        return;
+    }
+
+    if (m_wifiRetryTimer && m_wifiRetryTimer->isActive()) {
+        m_wifiRetryTimer->stop();
+    }
+    m_wifiRetryCount = 0;
+
+    QString targetId = ruleId.trimmed();
+    int foundIdx = -1;
+    if (!targetId.isEmpty()) {
+        for (int i = 0; i < m_wifiRules.size(); ++i) {
+            if (m_wifiRules.at(i).id == targetId) {
+                foundIdx = i;
+                break;
+            }
+        }
+    }
+
+    if (foundIdx >= 0) {
+        WifiRouteRule& existing = m_wifiRules[foundIdx];
+        existing.ssid = cleanSsid;
+        existing.adapterOrder = cleanOrder;
+        existing.enabled = enabled;
+    } else {
+        if (targetId.isEmpty()) {
+            targetId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        }
+        WifiRouteRule created;
+        created.id = targetId;
+        created.ssid = cleanSsid;
+        created.adapterOrder = cleanOrder;
+        created.enabled = enabled;
+        m_wifiRules.append(std::move(created));
+    }
+
+    m_wifiRuleModel->setRules(m_wifiRules, m_snapshot.connectedWifiSsid);
+    saveWifiRules();
+    emit wifiRulesChanged();
+    emit knownAdapterNamesChanged();
+    setStatus(
+        QStringLiteral("已保存 Wi-Fi 规则 [%1]（%2）。")
+            .arg(cleanSsid, formatWifiRuleOrderSummary(cleanOrder)),
+        false);
+
+    if (applyImmediately) {
+        applyWifiRuleNow(targetId);
+    }
+}
+
+void AppController::deleteWifiRule(const QString& ruleId)
+{
+    const QString targetId = ruleId.trimmed();
+    int idx = -1;
+    for (int i = 0; i < m_wifiRules.size(); ++i) {
+        if (m_wifiRules.at(i).id == targetId) {
+            idx = i;
+            break;
+        }
+    }
+    if (idx < 0) {
+        return;
+    }
+    if (m_wifiRetryTimer && m_wifiRetryTimer->isActive()) {
+        m_wifiRetryTimer->stop();
+    }
+    m_wifiRetryCount = 0;
+
+    const QString removedSsid = m_wifiRules.at(idx).ssid;
+    m_wifiRules.removeAt(idx);
+    m_wifiRuleModel->setRules(m_wifiRules, m_snapshot.connectedWifiSsid);
+    saveWifiRules();
+    emit wifiRulesChanged();
+    emit knownAdapterNamesChanged();
+    setStatus(QStringLiteral("已删除 Wi-Fi 规则 [%1]。").arg(removedSsid), false);
+}
+
+void AppController::setWifiRuleEnabled(const QString& ruleId, bool enabled)
+{
+    const QString targetId = ruleId.trimmed();
+    for (int i = 0; i < m_wifiRules.size(); ++i) {
+        if (m_wifiRules.at(i).id != targetId) {
+            continue;
+        }
+        if (m_wifiRules.at(i).enabled == enabled) {
+            return;
+        }
+        m_wifiRules[i].enabled = enabled;
+        const QString ruleSsid = m_wifiRules.at(i).ssid;
+        m_wifiRuleModel->setRules(m_wifiRules, m_snapshot.connectedWifiSsid);
+        saveWifiRules();
+        emit wifiRulesChanged();
+        setStatus(
+            QStringLiteral("已%1 Wi-Fi 规则 [%2]。")
+                .arg(enabled ? QStringLiteral("启用") : QStringLiteral("停用"), ruleSsid),
+            false);
+        if (enabled && m_settings.autoSwitchByWifi
+            && !m_snapshot.connectedWifiSsid.trimmed().isEmpty()
+            && ssidMatchesRule(m_snapshot.connectedWifiSsid, ruleSsid)) {
+            evaluateWifiAutoSwitch(true);
+        }
+        return;
+    }
+}
+
+void AppController::moveWifiRule(const QString& ruleId, int delta)
+{
+    const QString targetId = ruleId.trimmed();
+    int idx = -1;
+    for (int i = 0; i < m_wifiRules.size(); ++i) {
+        if (m_wifiRules.at(i).id == targetId) {
+            idx = i;
+            break;
+        }
+    }
+    const int newIdx = idx + delta;
+    if (idx < 0 || newIdx < 0 || newIdx >= m_wifiRules.size()) {
+        return;
+    }
+    m_wifiRules.move(idx, newIdx);
+    m_wifiRuleModel->setRules(m_wifiRules, m_snapshot.connectedWifiSsid);
+    saveWifiRules();
+    emit wifiRulesChanged();
+}
+
+void AppController::applyWifiRuleNow(const QString& ruleId)
+{
+    if (m_shuttingDown) {
+        return;
+    }
+    const QString targetId = ruleId.trimmed();
+    const WifiRouteRule* found = nullptr;
+    for (const WifiRouteRule& rule : m_wifiRules) {
+        if (rule.id == targetId) {
+            found = &rule;
+            break;
+        }
+    }
+    if (!found) {
+        return;
+    }
+    if (busy()) {
+        setStatus(QStringLiteral("正在执行其他操作，请稍后再应用规则 [%1]。").arg(found->ssid), true);
+        return;
+    }
+    const QList<AdapterInfo> desired =
+        buildOrderedInternetAdaptersForRule(m_internetModel->adapters(), *found);
+    if (desired.isEmpty()) {
+        setStatus(QStringLiteral("无法应用规则 [%1]：当前没有匹配的在线互联网出口网卡。").arg(found->ssid), true);
+        return;
+    }
+    if (!m_isElevated) {
+        setStatus(QStringLiteral("当前无管理员权限，无法应用 Wi-Fi 规则 [%1]。").arg(found->ssid), true);
+        return;
+    }
+    if (m_wifiRetryTimer && m_wifiRetryTimer->isActive()) {
+        m_wifiRetryTimer->stop();
+    }
+    m_wifiRetryCount = 0;
+    const QString currentSsid = m_snapshot.connectedWifiSsid.trimmed();
+    if (!currentSsid.isEmpty()) {
+        m_lastObservedWifiSsid = currentSsid;
+        m_lastAutoEvaluatedSsid = currentSsid;
+    }
+    applyWifiRuleInternal(*found, desired, false, found->ssid);
+}
+
+void AppController::evaluateWifiAutoSwitch(bool forceReevaluate)
+{
+    if (m_shuttingDown) {
+        if (m_wifiRetryTimer && m_wifiRetryTimer->isActive()) {
+            m_wifiRetryTimer->stop();
+        }
+        return;
+    }
+    if (!m_settings.autoSwitchByWifi) {
+        if (m_wifiRetryTimer && m_wifiRetryTimer->isActive()) {
+            m_wifiRetryTimer->stop();
+        }
+        m_wifiRetryCount = 0;
+        return;
+    }
+    if (busy()) {
+        return;
+    }
+
+    const QString currentSsid = m_snapshot.connectedWifiSsid.trimmed();
+    if (currentSsid.isEmpty()) {
+        if (m_wifiRetryTimer && m_wifiRetryTimer->isActive()) {
+            m_wifiRetryTimer->stop();
+        }
+        m_wifiRetryCount = 0;
+        m_lastObservedWifiSsid.clear();
+        m_lastAutoEvaluatedSsid.clear();
+        return;
+    }
+
+    if (currentSsid != m_lastObservedWifiSsid || forceReevaluate) {
+        m_lastObservedWifiSsid = currentSsid;
+        m_wifiRetryCount = 0;
+        if (m_wifiRetryTimer && m_wifiRetryTimer->isActive()) {
+            m_wifiRetryTimer->stop();
+        }
+    }
+
+    if (currentSsid == m_lastAutoEvaluatedSsid && !forceReevaluate) {
+        return;
+    }
+
+    const std::optional<WifiRouteRule> rule = findMatchingWifiRule(m_wifiRules, currentSsid);
+    if (!rule.has_value()) {
+        m_lastAutoEvaluatedSsid = currentSsid;
+        return;
+    }
+
+    const QList<AdapterInfo>& internetAdapters = m_internetModel->adapters();
+    const QList<AdapterInfo> desired = buildOrderedInternetAdaptersForRule(internetAdapters, *rule);
+
+    QString firstPreferredName;
+    for (const QString& name : rule->adapterOrder) {
+        const QString trimmed = name.trimmed();
+        if (!trimmed.isEmpty()) {
+            firstPreferredName = trimmed;
+            break;
+        }
+    }
+    bool firstPreferredOnline = false;
+    if (!firstPreferredName.isEmpty()) {
+        for (const AdapterInfo& adapter : internetAdapters) {
+            if (adapter.name.trimmed().compare(firstPreferredName, Qt::CaseInsensitive) == 0) {
+                firstPreferredOnline = true;
+                break;
+            }
+        }
+    }
+
+    if (!firstPreferredOnline || desired.isEmpty()) {
+        if (m_wifiRetryCount < 2) {
+            ++m_wifiRetryCount;
+            if (m_wifiRetryTimer) {
+                m_wifiRetryTimer->start();
+            }
+            return;
+        }
+        if (desired.isEmpty()) {
+            m_lastAutoEvaluatedSsid = currentSsid;
+            return;
+        }
+    }
+
+    if (isPriorityOrderAlreadySatisfied(internetAdapters, desired, m_settings.syncIpv6)) {
+        m_lastAutoEvaluatedSsid = currentSsid;
+        return;
+    }
+
+    if (!m_isElevated) {
+        m_lastAutoEvaluatedSsid = currentSsid;
+        setStatus(
+            QStringLiteral("Wi-Fi 已连接 [%1]（命中规则），但当前无管理员权限，无法自动调整跃点。").arg(currentSsid),
+            true);
+        return;
+    }
+
+    m_lastAutoEvaluatedSsid = currentSsid;
+    applyWifiRuleInternal(*rule, desired, true, currentSsid);
+}
+
+void AppController::preserveManualOverrideOnCurrentWifi(const RouteSnapshot& snapshot)
+{
+    const QString ssid = snapshot.connectedWifiSsid.trimmed();
+    if (!ssid.isEmpty() && (m_lastObservedWifiSsid.isEmpty() || m_lastObservedWifiSsid == ssid)) {
+        m_lastObservedWifiSsid = ssid;
+        m_lastAutoEvaluatedSsid = ssid;
+    }
+}
+
+void AppController::applyWifiRuleInternal(
+    const WifiRouteRule& rule,
+    const QList<AdapterInfo>& desired,
+    bool isAutoSwitch,
+    const QString& labelSsid)
+{
+    if (m_shuttingDown || desired.isEmpty()) {
+        return;
+    }
+    const bool syncIpv6 = m_settings.syncIpv6;
+    const QString primaryName = desired.first().name;
+    QStringList appliedNames;
+    appliedNames.reserve(desired.size());
+    for (const AdapterInfo& a : desired) {
+        appliedNames.append(a.name);
+    }
+    const QString appliedSummary = formatWifiRuleOrderSummary(appliedNames);
+
+    setStatus(
+        isAutoSwitch
+            ? QStringLiteral("正在按 Wi-Fi 规则 [%1] 自动切换出口至 [%2]...").arg(labelSsid, primaryName)
+            : QStringLiteral("正在应用 Wi-Fi 规则 [%1]（首选 %2）...").arg(rule.ssid, primaryName),
+        false);
+
+    const QPointer<AppController> self(this);
+    enqueueTask([this, self, desired, syncIpv6, isAutoSwitch, labelSsid, ruleSsid = rule.ssid, appliedSummary]() {
+        if (m_workerStopping.load(std::memory_order_acquire)) {
+            return;
+        }
+        const OperationResult res = m_networkService.applyPriorityOrder(desired, syncIpv6);
+        RouteSnapshot updated = m_networkService.getSnapshot();
+        if (m_workerStopping.load(std::memory_order_acquire)) {
+            return;
+        }
+        QMetaObject::invokeMethod(this, [self, updated = std::move(updated), res, isAutoSwitch, labelSsid, ruleSsid, appliedSummary]() {
+            if (!self || self->m_shuttingDown) {
+                return;
+            }
+            self->applySnapshot(updated);
+            if (res.ok) {
+                if (isAutoSwitch) {
+                    self->setStatus(
+                        QStringLiteral("已按 Wi-Fi 规则 [%1] 自动切换出口（%2）· %3")
+                            .arg(labelSsid, appliedSummary, res.message),
+                        false);
+                    if (self->m_protocol) {
+                        self->m_protocol->notifyUser(
+                            QStringLiteral("已按 Wi-Fi 规则 [%1] 自动切换出口（%2）")
+                                .arg(labelSsid, appliedSummary));
+                    }
+                } else {
+                    self->setStatus(
+                        QStringLiteral("已应用 Wi-Fi 规则 [%1]（%2）· %3")
+                            .arg(ruleSsid, appliedSummary, res.message),
+                        false);
+                }
+            } else {
+                self->setStatus(
+                    isAutoSwitch
+                        ? QStringLiteral("Wi-Fi 规则 [%1] 自动切换失败：%2").arg(labelSsid, res.message)
+                        : QStringLiteral("应用 Wi-Fi 规则 [%1] 失败：%2").arg(ruleSsid, res.message),
+                    true);
+            }
+            self->endTask();
+        }, Qt::QueuedConnection);
+    });
+}
+
 void AppController::performSetAsPrimary(int ifIndex, std::function<void(const OperationResult&)> done)
 {
     if (m_shuttingDown) {
@@ -642,6 +1164,9 @@ void AppController::performSetAsPrimary(int ifIndex, std::function<void(const Op
                 return;
             }
             self->applySnapshot(updated);
+            if (ok) {
+                self->preserveManualOverrideOnCurrentWifi(updated);
+            }
             self->setStatus(msg, !ok);
             if (done) {
                 done(OperationResult{ok, msg, errCode});
@@ -693,6 +1218,9 @@ void AppController::performMoveAdapter(int ifIndex, int delta)
                 return;
             }
             self->applySnapshot(updated);
+            if (ok) {
+                self->preserveManualOverrideOnCurrentWifi(updated);
+            }
             self->setStatus(msg, !ok);
             self->endTask();
         }, Qt::QueuedConnection);
@@ -724,6 +1252,9 @@ void AppController::performSetSingleMetric(int ifIndex, std::optional<int> metri
                 return;
             }
             self->applySnapshot(updated);
+            if (res.ok) {
+                self->preserveManualOverrideOnCurrentWifi(updated);
+            }
             self->setStatus(res.message, !res.ok);
             self->endTask();
         }, Qt::QueuedConnection);
@@ -757,6 +1288,9 @@ void AppController::performRestoreAllAutomatic(std::function<void(const Operatio
                 return;
             }
             self->applySnapshot(updated);
+            if (res.ok) {
+                self->preserveManualOverrideOnCurrentWifi(updated);
+            }
             self->setStatus(res.message, !res.ok);
             if (done) {
                 done(res);
@@ -882,6 +1416,28 @@ QJsonArray AppController::buildQueryItems(const QString& text, int limit) const
         ++inetRank;
     }
 
+    const QString ssidText = m_snapshot.connectedWifiSsid.trimmed();
+    const QString autoText = m_settings.autoSwitchByWifi ? QStringLiteral("已开启") : QStringLiteral("已关闭");
+    const QString wifiSub = ssidText.isEmpty()
+        ? QStringLiteral("未连接 Wi-Fi · 共 %1 条规则 · 自动切换%2").arg(m_wifiRules.size()).arg(autoText)
+        : QStringLiteral("当前 Wi-Fi: %1 · 共 %2 条规则 · 自动切换%3").arg(ssidText).arg(m_wifiRules.size()).arg(autoText);
+    pushIfMatch(
+        QJsonObject{
+            {QStringLiteral("id"), QStringLiteral("wifi-rules")},
+            {QStringLiteral("title"), QStringLiteral("管理 Wi-Fi 自动切换规则")},
+            {QStringLiteral("subtitle"), wifiSub},
+            {QStringLiteral("icon"), QStringLiteral("ph:wifi-high")},
+            {QStringLiteral("score"), 35},
+            {QStringLiteral("actions"), QJsonArray{
+                QJsonObject{
+                    {QStringLiteral("id"), QStringLiteral("default")},
+                    {QStringLiteral("title"), QStringLiteral("管理 Wi-Fi 自动切换规则")},
+                    {QStringLiteral("key"), QStringLiteral("Enter")},
+                },
+            }},
+        },
+        QStringLiteral("管理 Wi-Fi 自动切换规则 wifi 规则 rule ssid 自动 ") + wifiSub);
+
     const QString testSub = QStringLiteral("测试当前默认出口网关与公网 (223.5.5.5) 延迟 · %1").arg(m_activeV4Headline);
     pushIfMatch(
         QJsonObject{
@@ -970,6 +1526,7 @@ void AppController::handleInitialize(const QJsonValue& id, const QJsonObject& pa
         m_settings = PluginSettings::fromJson(params.value(QStringLiteral("settings")).toObject());
         saveFallbackSettings();
     }
+    loadWifiRules();
 
     const QString locale = params.value(QStringLiteral("locale")).toString(QStringLiteral("zh"));
     const QString themeStr = params.value(QStringLiteral("theme")).toString(QStringLiteral("dark"));
@@ -1037,6 +1594,17 @@ void AppController::handleAction(const QJsonValue& id, const QJsonObject& params
 
     if (act == QLatin1String("open-panel") || itemId == QLatin1String("open-panel")) {
         QMetaObject::invokeMethod(this, [this]() { showWindow(); }, Qt::QueuedConnection);
+        replyEffects({hideEffect()});
+        return;
+    }
+
+    if (itemId == QLatin1String("wifi-rules")) {
+        QMetaObject::invokeMethod(this, [this]() {
+            if (!m_shuttingDown && ensureWindow()) {
+                showWindow();
+                emit openWifiRulesRequested();
+            }
+        }, Qt::QueuedConnection);
         replyEffects({hideEffect()});
         return;
     }
@@ -1124,6 +1692,16 @@ void AppController::handleTrayMenu(const QJsonValue& id, bool hasId)
 
     items.append(QJsonObject{});
     items.append(QJsonObject{
+        {QStringLiteral("id"), QStringLiteral("toggle-wifi-auto")},
+        {QStringLiteral("title"), QStringLiteral("按 Wi-Fi 自动切换")},
+        {QStringLiteral("checked"), m_settings.autoSwitchByWifi},
+    });
+    items.append(QJsonObject{
+        {QStringLiteral("id"), QStringLiteral("wifi-rules")},
+        {QStringLiteral("title"), QStringLiteral("Wi-Fi 自动切换规则…")},
+    });
+    items.append(QJsonObject{});
+    items.append(QJsonObject{
         {QStringLiteral("id"), QStringLiteral("test")},
         {QStringLiteral("title"), QStringLiteral("出口测速")},
     });
@@ -1144,6 +1722,21 @@ void AppController::handleMenu(const QJsonObject& params)
     const QString menuId = params.value(QStringLiteral("id")).toString();
     if (menuId == QLatin1String("open") || menuId == QLatin1String("open-panel")) {
         showWindow();
+        return;
+    }
+    if (menuId == QLatin1String("toggle-wifi-auto")) {
+        const bool next = !m_settings.autoSwitchByWifi;
+        setAutoSwitchByWifi(next);
+        if (m_protocol) {
+            m_protocol->notifyUser(
+                next ? QStringLiteral("已开启按 Wi-Fi 自动切换")
+                     : QStringLiteral("已关闭按 Wi-Fi 自动切换"));
+        }
+        return;
+    }
+    if (menuId == QLatin1String("wifi-rules")) {
+        showWindow();
+        emit openWifiRulesRequested();
         return;
     }
     if (menuId == QLatin1String("test") || menuId == QLatin1String("test-connectivity")) {
@@ -1176,9 +1769,18 @@ void AppController::handleSettingsChanged(const QJsonObject& params)
     const QJsonObject obj = params.contains(QStringLiteral("settings"))
         ? params.value(QStringLiteral("settings")).toObject()
         : params;
+    const bool wasAutoWifi = m_settings.autoSwitchByWifi;
     m_settings = PluginSettings::fromJson(obj);
     saveFallbackSettings();
     emit settingsChanged();
+    if (!m_settings.autoSwitchByWifi) {
+        if (m_wifiRetryTimer && m_wifiRetryTimer->isActive()) {
+            m_wifiRetryTimer->stop();
+        }
+        m_wifiRetryCount = 0;
+    } else if (!wasAutoWifi) {
+        evaluateWifiAutoSwitch(true);
+    }
 }
 
 void AppController::handleAppearance(const QJsonObject& params)

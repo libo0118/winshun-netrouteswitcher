@@ -163,7 +163,7 @@ def run_e2e(exe_path: Path, qt_dir: Path, repo_root: Path) -> None:
                 "locale": "zh",
                 "theme": "dark",
                 "appearance": {"locale": "zh", "theme": "dark", "corners": "round"},
-                "settings": {"syncIpv6": True, "showDisconnected": False},
+                "settings": {"syncIpv6": True, "showDisconnected": False, "autoSwitchByWifi": True},
             })
             assert isinstance(init_res, dict) and init_res.get("protocol") == 1, init_res
 
@@ -178,10 +178,25 @@ def run_e2e(exe_path: Path, qt_dir: Path, repo_root: Path) -> None:
             })
             items = q_empty.get("items", [])
             item_ids = {it.get("id") for it in items if isinstance(it, dict)}
-            required_ids = {"open-panel", "test-connectivity", "restore-auto", "open-ncpa"}
+            required_ids = {"open-panel", "wifi-rules", "test-connectivity", "restore-auto", "open-ncpa"}
             missing_ids = required_ids - item_ids
             assert not missing_ids, (
                 f"Missing expected query items {sorted(missing_ids)}; got {sorted(x for x in item_ids if x)}"
+            )
+
+            q_wifi = harness.request("query", {
+                "queryId": 4,
+                "command": "route",
+                "trigger": "keyword",
+                "keyword": "route",
+                "text": "wifi 规则",
+                "raw": "route wifi 规则",
+                "limit": 30,
+            })
+            wifi_items = q_wifi.get("items", [])
+            wifi_ids = {it.get("id") for it in wifi_items if isinstance(it, dict)}
+            assert "wifi-rules" in wifi_ids, (
+                f"Expected 'wifi-rules' in filtered query items: {wifi_items}"
             )
 
             q_speed = harness.request("query", {
@@ -204,16 +219,43 @@ def run_e2e(exe_path: Path, qt_dir: Path, repo_root: Path) -> None:
 
             tray = harness.request("trayMenu", {})
             tray_items = tray.get("items", [])
-            tray_ids = {it.get("id") for it in tray_items if isinstance(it, dict)}
-            assert {"open", "restore-auto"}.issubset(tray_ids), (
-                f"Missing required trayMenu items ('open', 'restore-auto'): {tray_items}"
+            tray_by_id = {
+                it.get("id"): it for it in tray_items if isinstance(it, dict) and it.get("id")
+            }
+            assert {"open", "restore-auto", "toggle-wifi-auto", "wifi-rules"}.issubset(tray_by_id.keys()), (
+                f"Missing required trayMenu items: {tray_items}"
             )
+            assert tray_by_id["toggle-wifi-auto"].get("checked") is True, (
+                f"Expected toggle-wifi-auto checked=True initially: {tray_by_id['toggle-wifi-auto']}"
+            )
+
+            harness.notify("menu", {"id": "toggle-wifi-auto"})
+            tray_after_toggle = harness.request("trayMenu", {})
+            toggled_items = {
+                it.get("id"): it
+                for it in tray_after_toggle.get("items", [])
+                if isinstance(it, dict) and it.get("id")
+            }
+            assert toggled_items["toggle-wifi-auto"].get("checked") is False, (
+                f"Expected toggle-wifi-auto checked=False after menu toggle: {toggled_items}"
+            )
+            harness.notify("menu", {"id": "toggle-wifi-auto"})
 
             settings_res = harness.request("showSettings", {})
             assert settings_res == {}, f"Expected {{}} from showSettings, got {settings_res}"
             time.sleep(0.8)
             assert harness.proc.poll() is None, (
                 f"Process crashed/exited after showSettings (returncode={harness.proc.returncode})"
+            )
+
+            wifi_action_res = harness.request("action", {
+                "action": "default",
+                "item": {"id": "wifi-rules"},
+            })
+            assert isinstance(wifi_action_res, dict) and "effects" in wifi_action_res, wifi_action_res
+            time.sleep(0.5)
+            assert harness.proc.poll() is None, (
+                f"Process crashed/exited after opening WifiRulesDialog (returncode={harness.proc.returncode})"
             )
 
             harness.notify("appearance", {
