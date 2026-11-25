@@ -552,6 +552,17 @@ QStringList AppController::knownAdapterNames() const
     return dedupeTrimmedNames(rawNames);
 }
 
+QStringList AppController::internetAdapterNames() const
+{
+    QStringList rawNames;
+    for (const AdapterInfo& a : m_snapshot.adapters) {
+        if (a.category == AdapterCategory::Internet) {
+            rawNames.append(a.name);
+        }
+    }
+    return dedupeTrimmedNames(rawNames);
+}
+
 void AppController::loadWifiRules()
 {
     m_wifiRules.clear();

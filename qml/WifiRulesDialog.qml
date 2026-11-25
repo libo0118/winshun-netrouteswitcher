@@ -67,13 +67,25 @@ Popup {
             }
         }
         const known = controller.knownAdapterNames
-        const defaultIncluded = !savedOrder || savedOrder.length === 0
+        const internetNames = controller.internetAdapterNames
+        const internetSet = {}
+        for (let i = 0; i < internetNames.length; ++i) {
+            const netName = String(internetNames[i]).trim().toLowerCase()
+            if (netName.length > 0) {
+                internetSet[netName] = true
+            }
+        }
+        const isCreateMode = !savedOrder || savedOrder.length === 0
+        const hasInternetAdapters = internetNames.length > 0
         for (let i = 0; i < known.length; ++i) {
             const name = String(known[i]).trim()
             if (name.length === 0) continue
             const key = name.toLowerCase()
             if (!seen[key]) {
                 seen[key] = true
+                const defaultIncluded = isCreateMode
+                    ? (hasInternetAdapters ? Boolean(internetSet[key]) : true)
+                    : false
                 adapterOrderModel.append({ adapterName: name, included: defaultIncluded })
             }
         }
@@ -239,15 +251,21 @@ Popup {
 
     component RuleSwitch: Switch {
         id: rsw
-        implicitHeight: 24
+        readonly property int trackWidth: 36
+        readonly property int trackHeight: 20
+        implicitWidth: leftPadding + rightPadding
+            + (rsw.text.length > 0 ? Math.max(trackWidth, switchLbl.implicitWidth) : trackWidth)
+        implicitHeight: Math.max(24, switchLbl.implicitHeight)
         leftPadding: 0
         rightPadding: 0
         spacing: rsw.text.length > 0 ? 8 : 0
         hoverEnabled: true
         focusPolicy: Qt.NoFocus
         indicator: Rectangle {
-            implicitWidth: 36
-            implicitHeight: 20
+            width: rsw.trackWidth
+            height: rsw.trackHeight
+            implicitWidth: rsw.trackWidth
+            implicitHeight: rsw.trackHeight
             x: rsw.leftPadding
             y: (rsw.height - height) / 2
             radius: theme.rounded ? 10 : 2
@@ -269,12 +287,13 @@ Popup {
             }
         }
         contentItem: Text {
+            id: switchLbl
             visible: rsw.text.length > 0
             text: rsw.text
             color: theme.text
             font.pixelSize: theme.fontSizeBody
             font.weight: Font.DemiBold
-            leftPadding: rsw.text.length > 0 ? (rsw.indicator.width + rsw.spacing) : 0
+            leftPadding: rsw.text.length > 0 ? (rsw.trackWidth + rsw.spacing) : 0
             verticalAlignment: Text.AlignVCenter
         }
         background: Item {}
@@ -282,15 +301,20 @@ Popup {
 
     component DialogCheckBox: CheckBox {
         id: dcb
-        implicitHeight: 24
+        readonly property int boxSize: 16
+        implicitWidth: leftPadding + rightPadding
+            + (dcb.text.length > 0 ? Math.max(boxSize, dcbLbl.implicitWidth) : boxSize)
+        implicitHeight: Math.max(24, dcbLbl.implicitHeight)
         leftPadding: 0
         rightPadding: 0
-        spacing: 7
+        spacing: dcb.text.length > 0 ? 7 : 0
         hoverEnabled: true
         focusPolicy: Qt.NoFocus
         indicator: Rectangle {
-            width: 16
-            height: 16
+            width: dcb.boxSize
+            height: dcb.boxSize
+            implicitWidth: dcb.boxSize
+            implicitHeight: dcb.boxSize
             x: dcb.leftPadding
             y: (dcb.height - height) / 2
             radius: Math.min(theme.controlRadius, 4)
@@ -325,10 +349,12 @@ Popup {
             }
         }
         contentItem: Text {
+            id: dcbLbl
+            visible: dcb.text.length > 0
             text: dcb.text
             color: theme.text
             font.pixelSize: theme.fontSizeBody
-            leftPadding: dcb.indicator.width + dcb.spacing
+            leftPadding: dcb.text.length > 0 ? (dcb.boxSize + dcb.spacing) : 0
             verticalAlignment: Text.AlignVCenter
             elide: Text.ElideRight
         }
@@ -556,12 +582,17 @@ Popup {
 
                                     RuleSwitch {
                                         id: ruleEnableSw
+                                        Layout.preferredWidth: 36
+                                        Layout.minimumWidth: 36
+                                        Layout.alignment: Qt.AlignVCenter
                                         checked: model.enabled
                                         onToggled: controller.setWifiRuleEnabled(model.ruleId, ruleEnableSw.checked)
                                     }
 
                                     ColumnLayout {
                                         Layout.fillWidth: true
+                                        Layout.minimumWidth: 120
+                                        Layout.alignment: Qt.AlignVCenter
                                         spacing: 4
                                         opacity: model.enabled ? 1.0 : 0.60
 
@@ -606,6 +637,7 @@ Popup {
                                     }
 
                                     RowLayout {
+                                        Layout.alignment: Qt.AlignVCenter
                                         spacing: 4
 
                                         DialogBtn {

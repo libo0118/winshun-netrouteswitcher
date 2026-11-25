@@ -60,6 +60,7 @@ class AppController : public QObject {
     Q_PROPERTY(int wifiRuleCount READ wifiRuleCount NOTIFY wifiRulesChanged)
     Q_PROPERTY(QStringList savedWifiProfiles READ savedWifiProfiles NOTIFY wifiProfilesChanged)
     Q_PROPERTY(QStringList knownAdapterNames READ knownAdapterNames NOTIFY knownAdapterNamesChanged)
+    Q_PROPERTY(QStringList internetAdapterNames READ internetAdapterNames NOTIFY knownAdapterNamesChanged)
     Q_PROPERTY(bool standaloneMode READ standaloneMode CONSTANT)
     Q_PROPERTY(bool shuttingDown READ shuttingDown NOTIFY shuttingDownChanged)
     Q_PROPERTY(bool dialogOpen READ dialogOpen WRITE setDialogOpen NOTIFY dialogOpenChanged)
@@ -98,6 +99,7 @@ public:
     int wifiRuleCount() const { return m_wifiRuleModel->count(); }
     QStringList savedWifiProfiles() const { return m_savedWifiProfiles; }
     QStringList knownAdapterNames() const;
+    QStringList internetAdapterNames() const;
     bool standaloneMode() const { return m_standaloneMode; }
     bool shuttingDown() const { return m_shuttingDown; }
     bool dialogOpen() const { return m_dialogOpen; }

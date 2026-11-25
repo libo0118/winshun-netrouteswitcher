@@ -82,9 +82,10 @@ ApplicationWindow {
         property int horizontalPad: 8
         property int maxLabelWidth: 0
 
+        readonly property int measuredTextWidth: Math.ceil(pillLbl.implicitWidth) + 2
         readonly property int effectiveLabelWidth: maxLabelWidth > 0
-            ? Math.min(pillLbl.implicitWidth, maxLabelWidth)
-            : pillLbl.implicitWidth
+            ? Math.min(measuredTextWidth, maxLabelWidth)
+            : measuredTextWidth
 
         implicitWidth: effectiveLabelWidth + horizontalPad * 2
         implicitHeight: 22
@@ -95,28 +96,37 @@ ApplicationWindow {
 
         Text {
             id: pillLbl
-            anchors.centerIn: parent
-            width: pill.effectiveLabelWidth
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.leftMargin: pill.horizontalPad
+            anchors.rightMargin: pill.horizontalPad
+            anchors.verticalCenter: parent.verticalCenter
+            horizontalAlignment: Text.AlignHCenter
             text: pill.labelText
             color: pill.textColor
             font.pixelSize: theme.fontSizeCaption
             font.weight: pill.boldText ? Font.DemiBold : Font.Normal
-            elide: Text.ElideRight
+            elide: pill.maxLabelWidth > 0 ? Text.ElideRight : Text.ElideNone
         }
     }
 
     component StyledCheckBox: CheckBox {
         id: cb
-        implicitHeight: 24
+        readonly property int boxSize: 16
+        implicitWidth: leftPadding + rightPadding
+            + (cb.text.length > 0 ? Math.max(boxSize, cbLbl.implicitWidth) : boxSize)
+        implicitHeight: Math.max(24, cbLbl.implicitHeight)
         leftPadding: 0
         rightPadding: 0
-        spacing: 7
+        spacing: cb.text.length > 0 ? 7 : 0
         hoverEnabled: true
         focusPolicy: Qt.NoFocus
 
         indicator: Rectangle {
-            width: 16
-            height: 16
+            width: cb.boxSize
+            height: cb.boxSize
+            implicitWidth: cb.boxSize
+            implicitHeight: cb.boxSize
             x: cb.leftPadding
             y: (cb.height - height) / 2
             radius: Math.min(theme.controlRadius, 4)
@@ -153,10 +163,12 @@ ApplicationWindow {
         }
 
         contentItem: Text {
+            id: cbLbl
+            visible: cb.text.length > 0
             text: cb.text
             color: theme.text
             font.pixelSize: theme.fontSizeBody
-            leftPadding: cb.indicator.width + cb.spacing
+            leftPadding: cb.text.length > 0 ? (cb.boxSize + cb.spacing) : 0
             verticalAlignment: Text.AlignVCenter
         }
 
@@ -190,22 +202,55 @@ ApplicationWindow {
                 anchors.topMargin: 14
                 spacing: 12
 
-                RowLayout {
+                ColumnLayout {
                     Layout.fillWidth: true
-                    spacing: 10
+                    spacing: 8
 
-                    Flow {
+                    RowLayout {
                         Layout.fillWidth: true
-                        spacing: 8
+                        spacing: 10
 
                         Text {
-                            height: 22
+                            height: 28
                             verticalAlignment: Text.AlignVCenter
                             text: "当前互联网出口路由"
                             color: theme.text
                             font.pixelSize: theme.fontSizeTitle
                             font.weight: Font.Bold
                         }
+
+                        Item { Layout.fillWidth: true }
+
+                        RowLayout {
+                            spacing: 8
+
+                            ActionBtn {
+                                text: "刷新 (F5)"
+                                enabled: !controller.busy
+                                onClicked: controller.refresh()
+                            }
+                            ActionBtn {
+                                text: "出口测速"
+                                enabled: !controller.busy
+                                onClicked: controller.testConnectivity()
+                            }
+                            ActionBtn {
+                                text: controller.wifiRuleCount > 0
+                                    ? ("自动规则 (" + controller.wifiRuleCount + ")")
+                                    : "自动规则"
+                                onClicked: wifiRulesDialog.openList()
+                            }
+                            ActionBtn {
+                                text: "恢复系统自动"
+                                enabled: !controller.busy && controller.internetCount > 0
+                                onClicked: controller.restoreAllAutomatic()
+                            }
+                        }
+                    }
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 8
 
                         BadgePill {
                             labelText: controller.isElevated ? "管理员权限" : "标准权限（只读）"
@@ -219,7 +264,7 @@ ApplicationWindow {
                         BadgePill {
                             visible: controller.connectedWifiSsid.length > 0
                             labelText: "Wi-Fi: " + controller.connectedWifiSsid
-                            maxLabelWidth: 180
+                            maxLabelWidth: 240
                             bgColor: theme.infoBg
                             borderColor: theme.infoBorder
                             textColor: theme.infoText
@@ -230,40 +275,15 @@ ApplicationWindow {
                         BadgePill {
                             visible: controller.hasTunTakeover
                             labelText: controller.tunTakeoverBadge
-                            maxLabelWidth: 160
+                            maxLabelWidth: 220
                             bgColor: theme.infoBg
                             borderColor: theme.infoBorder
                             textColor: theme.infoText
                             hasBorder: true
                             boldText: true
                         }
-                    }
 
-                    RowLayout {
-                        Layout.alignment: Qt.AlignTop
-                        spacing: 8
-
-                        ActionBtn {
-                            text: "刷新 (F5)"
-                            enabled: !controller.busy
-                            onClicked: controller.refresh()
-                        }
-                        ActionBtn {
-                            text: "出口测速"
-                            enabled: !controller.busy
-                            onClicked: controller.testConnectivity()
-                        }
-                        ActionBtn {
-                            text: controller.wifiRuleCount > 0
-                                ? ("自动规则 (" + controller.wifiRuleCount + ")")
-                                : "自动规则"
-                            onClicked: wifiRulesDialog.openList()
-                        }
-                        ActionBtn {
-                            text: "恢复系统自动"
-                            enabled: !controller.busy && controller.internetCount > 0
-                            onClicked: controller.restoreAllAutomatic()
-                        }
+                        Item { Layout.fillWidth: true }
                     }
                 }
 
